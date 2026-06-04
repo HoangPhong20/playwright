@@ -1,0 +1,16 @@
+.idea/
+.pytest_cache/
+.venv/
+venv/
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+data/
+.vscode/
+.DS_Store
+Thumbs.db
