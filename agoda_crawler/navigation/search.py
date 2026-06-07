@@ -24,10 +24,13 @@ from agoda_crawler.navigation.urls import (
 )
 from agoda_crawler.utils.page_helpers import handle_cookie_popup, wait_for_cards
 from agoda_crawler.extraction.selectors import (
+    BROAD_LISTING_CARD_SELECTORS,
     DESTINATION_INPUT_SELECTORS,
+    LISTING_CARD_SELECTORS,
     NEXT_PAGE_SELECTORS,
 )
 from agoda_crawler.config import (
+    CARDS_POLL_INTERVAL,
     CARDS_TIMEOUT,
     CARDS_TIMEOUT_RETRY,
     CLICK_DEFAULT,
@@ -37,8 +40,6 @@ from agoda_crawler.config import (
     LOAD_PAGE,
     URL_FALLBACK_CARDS_TIMEOUT,
     SEARCH_ATTEMPTS,
-    WAIT_AFTER_NAV,
-    WAIT_AFTER_SEARCH,
     WAIT_STABLE_LOAD_TIMEOUT,
     WAIT_STABLE_SETTLE,
 )
@@ -75,6 +76,7 @@ NON_HOTEL_MODE_TEXT = re.compile(
     ),
     re.I,
 )
+RESULTS_CHANGE_GRACE_SECONDS = 2.0
 
 
 # UI flow diagram:
@@ -181,6 +183,7 @@ def _click_next_page_control(page: Page) -> bool:
 
 
 def _click_next_page_control_with_js(page: Page) -> bool:
+    before_signature = _results_signature(page)
     try:
         clicked = page.evaluate(
             """
@@ -209,12 +212,12 @@ def _click_next_page_control_with_js(page: Page) -> bool:
     if not clicked:
         return False
     try:
-        page.wait_for_load_state("domcontentloaded", timeout=LOAD_PAGE)
-    except PlaywrightTimeoutError:
-        pass
-    page.wait_for_timeout(WAIT_AFTER_NAV)
-    try:
-        wait_for_cards(page, timeout_ms=CARDS_TIMEOUT_RETRY)
+        _wait_for_results_ready(
+            page,
+            before_signature=before_signature,
+            timeout_ms=CARDS_TIMEOUT_RETRY,
+            require_change=True,
+        )
     except Exception as exc:
         log_ignored_error("Next page JS card wait failed", exc)
     return True
@@ -274,9 +277,7 @@ def _open_next_page_link(page: Page, page_number: int) -> bool:
         try:
             log(f"Page {page_number}: opening href")
             page.goto(target_url, wait_until="domcontentloaded", timeout=LOAD_PAGE)
-            _wait_until_stable(page)
-            page.wait_for_timeout(WAIT_AFTER_NAV)
-            wait_for_cards(page, timeout_ms=CARDS_TIMEOUT_RETRY)
+            _wait_for_results_ready(page, timeout_ms=CARDS_TIMEOUT_RETRY)
             return True
         except Exception as exc:
             log(f"Page {page_number}: href failed ({str(exc).splitlines()[0]})")
@@ -287,11 +288,9 @@ def _open_next_page_link(page: Page, page_number: int) -> bool:
 def _activate_pagination_control(page: Page, control: Locator) -> bool:
     if not _is_visible(control) or _is_disabled_control(control):
         return False
+    before_signature = _results_signature(page)
 
-    try:
-        control.scroll_into_view_if_needed(timeout=CLICK_SHORT)
-    except Exception as exc:
-        log_ignored_error("Pagination control scroll failed", exc)
+    _scroll_pagination_control(control)
 
     try:
         control.click(timeout=CLICK_NEXT_PAGE)
@@ -299,16 +298,37 @@ def _activate_pagination_control(page: Page, control: Locator) -> bool:
         return False
 
     try:
-        page.wait_for_load_state("domcontentloaded", timeout=LOAD_PAGE)
-    except PlaywrightTimeoutError:
-        pass
-    page.wait_for_timeout(WAIT_AFTER_NAV)
-
-    try:
-        wait_for_cards(page, timeout_ms=CARDS_TIMEOUT_RETRY)
+        _wait_for_results_ready(
+            page,
+            before_signature=before_signature,
+            timeout_ms=CARDS_TIMEOUT_RETRY,
+            require_change=True,
+        )
     except Exception as exc:
         log_ignored_error("Pagination control card wait failed", exc)
     return True
+
+
+def _scroll_pagination_control(control: Locator) -> None:
+    try:
+        control.scroll_into_view_if_needed(timeout=CLICK_SHORT)
+        return
+    except Exception:
+        pass
+
+    try:
+        control.evaluate(
+            """
+            element => element.scrollIntoView({
+                block: 'center',
+                inline: 'center',
+                behavior: 'instant'
+            })
+            """,
+            timeout=CLICK_NEXT_PAGE,
+        )
+    except Exception as exc:
+        log_ignored_error("Pagination control scroll failed", exc)
 
 
 def _is_target_page_control(control: Locator, page_number: int) -> bool:
@@ -364,9 +384,7 @@ def _go_to_next_page_url(page: Page, next_page_number: int) -> bool:
         try:
             log(f"Page {next_page_number}: URL fallback")
             page.goto(target_url, wait_until="domcontentloaded", timeout=LOAD_PAGE)
-            _wait_until_stable(page)
-            page.wait_for_timeout(WAIT_AFTER_NAV)
-            wait_for_cards(page, timeout_ms=CARDS_TIMEOUT_RETRY)
+            _wait_for_results_ready(page, timeout_ms=CARDS_TIMEOUT_RETRY)
             return True
         except Exception as exc:
             log(f"Page {next_page_number}: URL fallback failed ({str(exc).splitlines()[0]})")
@@ -505,7 +523,6 @@ def _find_hotel_tab(page: Page, timeout_ms: int) -> Optional[Locator]:
             text = _safe_text(locator)
             if exact_text.search(text):
                 return locator
-        time.sleep(0.2)
 
     return None
 
@@ -527,7 +544,11 @@ def _click_destination_landing_card(page: Page, destination: str) -> None:
 
     deadline = time.time() + 10
     while time.time() < deadline:
-        for idx in range(candidates.count()):
+        try:
+            candidate_count = candidates.count()
+        except Exception:
+            candidate_count = 0
+        for idx in range(candidate_count):
             candidate = candidates.nth(idx)
             if not _is_visible(candidate):
                 continue
@@ -546,7 +567,7 @@ def _click_destination_landing_card(page: Page, destination: str) -> None:
                 return
             except Exception:
                 continue
-        time.sleep(0.3)
+        _wait_for_candidate_controls_update(page, candidate_count, deadline)
 
     raise RuntimeError(f"Cannot find visible destination landing card: {destination}")
 
@@ -583,8 +604,7 @@ def _open_ui_derived_city_search_url(
         try:
             log(f"Search URL {idx}/{len(candidates)}: {_search_url_label(target_url)}")
             page.goto(target_url, wait_until="domcontentloaded", timeout=LOAD_PAGE)
-            _wait_until_stable(page)
-            page.wait_for_timeout(WAIT_AFTER_SEARCH)
+            _wait_for_results_ready(page, timeout_ms=URL_FALLBACK_CARDS_TIMEOUT)
             if _is_activities_shell(page):
                 raise RuntimeError("Derived URL opened Activities shell")
             return wait_for_cards(page, timeout_ms=URL_FALLBACK_CARDS_TIMEOUT)
@@ -601,8 +621,200 @@ def _find_destination_input(page: Page, timeout_ms: int) -> Optional[Locator]:
         locator = _first_visible(page, DESTINATION_INPUT_SELECTORS, timeout_ms=500)
         if locator is not None:
             return locator
-        time.sleep(0.2)
     return None
+
+
+def _wait_for_results_ready(
+    page: Page,
+    before_signature: Optional[str] = None,
+    timeout_ms: int = CARDS_TIMEOUT_RETRY,
+    require_change: bool = False,
+) -> str:
+    """
+    Wait for listing cards and, when requested, evidence that results changed.
+
+    Agoda pagination can update by navigation or in-place DOM replacement. This
+    polls card selectors and a compact listing signature instead of relying on a
+    fixed post-click sleep.
+    """
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=LOAD_PAGE)
+    except PlaywrightTimeoutError:
+        pass
+
+    selector = _wait_for_results_function(
+        page,
+        before_signature=before_signature,
+        timeout_ms=timeout_ms,
+        require_change=require_change,
+    )
+    if selector:
+        return selector
+
+    selector = _poll_for_results_ready(
+        page,
+        before_signature=before_signature,
+        timeout_ms=min(timeout_ms, CARDS_POLL_INTERVAL),
+        require_change=require_change,
+    )
+    if selector:
+        return selector
+    return wait_for_cards(page, timeout_ms=timeout_ms)
+
+
+def _wait_for_results_function(
+    page: Page,
+    before_signature: Optional[str],
+    timeout_ms: int,
+    require_change: bool,
+) -> Optional[str]:
+    selectors = [*LISTING_CARD_SELECTORS, *BROAD_LISTING_CARD_SELECTORS]
+    try:
+        page.wait_for_function(
+            """
+            ([selectors, beforeSignature, requireChange, startedAt, graceMs]) => {
+                const safeQueryCount = (selector) => {
+                    try {
+                        return document.querySelectorAll(selector).length;
+                    } catch (error) {
+                        return 0;
+                    }
+                };
+                const cardSelector = selectors.join(',');
+                const cardCount = safeQueryCount(cardSelector);
+                if (cardCount <= 0) return false;
+
+                const paginationSelector = [
+                    '[aria-current="page"]',
+                    '[data-selenium="pagination-text"]',
+                    '#paginationPageCount',
+                    '[class*="pagination" i] [class*="active" i]'
+                ].join(',');
+                const hrefs = Array.from(document.querySelectorAll('a[href*="/hotel/"]'))
+                    .slice(0, 8)
+                    .map((link) => link.href || link.getAttribute('href') || '')
+                    .join('|');
+                const activeText = Array.from(document.querySelectorAll(paginationSelector))
+                    .slice(0, 3)
+                    .map((node) => (node.textContent || '').trim())
+                    .join('|');
+                const signature = [
+                    location.href,
+                    cardCount,
+                    activeText,
+                    hrefs
+                ].join('::');
+                return (
+                    !requireChange ||
+                    !beforeSignature ||
+                    signature !== beforeSignature ||
+                    Date.now() - startedAt >= graceMs
+                );
+            }
+            """,
+            arg=[
+                selectors,
+                before_signature or "",
+                require_change,
+                int(time.time() * 1000),
+                int(RESULTS_CHANGE_GRACE_SECONDS * 1000),
+            ],
+            timeout=timeout_ms,
+        )
+        return _matching_listing_selector(page)
+    except PlaywrightTimeoutError:
+        return _matching_listing_selector(page)
+    except Exception as exc:
+        log_ignored_error("Results wait function failed", exc)
+        return None
+
+
+def _poll_for_results_ready(
+    page: Page,
+    before_signature: Optional[str],
+    timeout_ms: int,
+    require_change: bool,
+) -> Optional[str]:
+    deadline = time.time() + timeout_ms / 1000.0
+    cards_seen_at: Optional[float] = None
+    last_selector: Optional[str] = None
+
+    while time.time() < deadline:
+        selector = _matching_listing_selector(page)
+        if selector:
+            last_selector = selector
+            signature = _results_signature(page)
+            changed = before_signature is None or signature != before_signature
+            if not require_change or changed:
+                return selector
+            if cards_seen_at is None:
+                cards_seen_at = time.time()
+            if time.time() - cards_seen_at >= RESULTS_CHANGE_GRACE_SECONDS:
+                return selector
+        remaining_ms = int((deadline - time.time()) * 1000)
+        if remaining_ms <= 0:
+            break
+        time.sleep(min(CARDS_POLL_INTERVAL, remaining_ms) / 1000.0)
+
+    return last_selector
+
+
+def _matching_listing_selector(page: Page) -> Optional[str]:
+    for selector in [*LISTING_CARD_SELECTORS, *BROAD_LISTING_CARD_SELECTORS]:
+        try:
+            if page.locator(selector).count() > 0:
+                return selector
+        except Exception:
+            continue
+    return None
+
+
+def _results_signature(page: Page) -> str:
+    try:
+        return str(
+            page.evaluate(
+                """
+                () => {
+                    const cardSelector = [
+                        '[data-selenium="hotel-item"]',
+                        '[data-selenium="hotel-item-container"]',
+                        '[data-testid="property-card"]',
+                        '[data-testid="search-result-card"]',
+                        '[data-testid="hotel-card"]',
+                        '[data-element-name="property-card"]',
+                        '[data-element-name="hotel-item"]',
+                        'li[data-selenium="hotel-item"]',
+                        'article:has(a[href*="/hotel/"])'
+                    ].join(',');
+                    const paginationSelector = [
+                        '[aria-current="page"]',
+                        '[data-selenium="pagination-text"]',
+                        '#paginationPageCount',
+                        '[class*="pagination" i] [class*="active" i]'
+                    ].join(',');
+                    const hrefs = Array.from(document.querySelectorAll('a[href*="/hotel/"]'))
+                        .slice(0, 8)
+                        .map((link) => link.href || link.getAttribute('href') || '')
+                        .join('|');
+                    const activeText = Array.from(document.querySelectorAll(paginationSelector))
+                        .slice(0, 3)
+                        .map((node) => (node.textContent || '').trim())
+                        .join('|');
+                    return [
+                        location.href,
+                        document.querySelectorAll(cardSelector).length,
+                        activeText,
+                        hrefs
+                    ].join('::');
+                }
+                """
+            )
+        )
+    except Exception:
+        try:
+            return page.url
+        except Exception:
+            return ""
 
 
 def _first_visible(page: Page, selectors: Iterable[str], timeout_ms: int) -> Optional[Locator]:
@@ -617,8 +829,44 @@ def _first_visible(page: Page, selectors: Iterable[str], timeout_ms: int) -> Opt
                     return locator
             except Exception:
                 continue
-        time.sleep(0.2)
+        locator = _wait_for_visible_selector(page, selectors, deadline)
+        if locator is not None:
+            return locator
     return None
+
+
+def _wait_for_visible_selector(
+    page: Page,
+    selectors: Iterable[str],
+    deadline: float,
+) -> Optional[Locator]:
+    for selector in selectors:
+        remaining_ms = int((deadline - time.time()) * 1000)
+        if remaining_ms <= 0:
+            break
+        locator = page.locator(selector).first
+        try:
+            locator.wait_for(state="visible", timeout=min(remaining_ms, 150))
+            return locator
+        except Exception:
+            continue
+    return None
+
+
+def _wait_for_candidate_controls_update(page: Page, previous_count: int, deadline: float) -> None:
+    remaining_ms = int((deadline - time.time()) * 1000)
+    if remaining_ms <= 0:
+        return
+    try:
+        page.wait_for_function(
+            """
+            previousCount => document.querySelectorAll('a, button, [role="link"]').length !== previousCount
+            """,
+            arg=previous_count,
+            timeout=min(remaining_ms, 300),
+        )
+    except Exception:
+        return
 
 
 def _is_visible(locator: Locator) -> bool:

@@ -26,7 +26,6 @@ DETAIL_ENRICH_FIELDS = (
     "rating_text",
     "review_count_text",
     "star_rating_text",
-    "location_text",
     "image_url",
 )
 DEFAULT_DETAIL_ENRICH_FIELDS = ("price_value", "rating_text", "review_count_text")
@@ -99,7 +98,10 @@ def enrich_records_from_details(
         return
 
     total_label = str(len(candidates))
-    log(f"Detail: enriching {len(candidates)} records with {worker_count} workers")
+    log(
+        f"Detail: enriching {len(candidates)} records with {worker_count} workers "
+        "(isolated browser/context per worker)"
+    )
     enrich_records_from_details_parallel(
         candidates,
         check_in=check_in,

@@ -7,10 +7,15 @@ from agoda_crawler.extraction import (
     _canonicalize_price_value,
     _price_value_from_text,
     _parse_star_rating,
-    _normalize_location_text,
     _record_key,
     _parse_textual_fallback,
 )
+from agoda_crawler.extraction.fields import (
+    FIELD_SELECTOR_TIMEOUT,
+    extract_from_cards,
+    first_text,
+)
+from agoda_crawler.extraction.selectors import FIELD_SELECTORS
 
 
 def test_parse_textual_fallback_ignores_carousel_index_for_rating() -> None:
@@ -187,9 +192,89 @@ def test_detail_text_parsers_handle_vietnamese_review_and_stars() -> None:
     assert _parse_star_rating(star) == "4 stars"
 
 
-def test_normalize_location_text_drops_repeated_ward_chunk() -> None:
-    raw = "252 Duong Ba Cu Phuong 3, Phường 3, Vung Tau, Viet Nam"
+class _FieldLocator:
+    def __init__(self, text: str | None = None, attrs: dict[str, str] | None = None) -> None:
+        self.text = text
+        self.attrs = attrs or {}
+        self.inner_text_timeouts = []
+        self.attribute_timeouts = []
 
-    normalized = _normalize_location_text(raw)
+    @property
+    def first(self):
+        return self
 
-    assert normalized == "252 Duong Ba Cu Phuong 3, Vung Tau, Viet Nam"
+    def count(self) -> int:
+        return 1 if self.text is not None or self.attrs else 0
+
+    def inner_text(self, timeout: int) -> str:
+        self.inner_text_timeouts.append(timeout)
+        return self.text or ""
+
+    def get_attribute(self, attr: str, timeout: int):
+        self.attribute_timeouts.append((attr, timeout))
+        return self.attrs.get(attr)
+
+
+class _ExtractionCard:
+    def __init__(self, raise_on_scroll: bool = False) -> None:
+        self.raise_on_scroll = raise_on_scroll
+        self.scroll_timeouts = []
+        self.locators: dict[str, _FieldLocator] = {
+            FIELD_SELECTORS["hotel_name"][0]: _FieldLocator("Demo Hotel"),
+            FIELD_SELECTORS["hotel_link"][0]: _FieldLocator(attrs={"href": "/demo/hotel/demo.html"}),
+            FIELD_SELECTORS["price_value"][0]: _FieldLocator("VND 1000000"),
+            FIELD_SELECTORS["rating_text"][0]: _FieldLocator("8.5"),
+            FIELD_SELECTORS["review_count_text"][0]: _FieldLocator("120 reviews"),
+        }
+
+    def locator(self, selector: str) -> _FieldLocator:
+        return self.locators.get(selector, _FieldLocator())
+
+    def inner_text(self, timeout: int) -> str:
+        return "Demo Hotel VND 1000000 8.5 120 reviews"
+
+    def scroll_into_view_if_needed(self, timeout: int) -> None:
+        self.scroll_timeouts.append(timeout)
+        if self.raise_on_scroll:
+            raise RuntimeError("cannot scroll")
+
+
+class _CardsLocator:
+    def __init__(self, cards: list[_ExtractionCard]) -> None:
+        self.cards = cards
+
+    def count(self) -> int:
+        return len(self.cards)
+
+    def nth(self, index: int) -> _ExtractionCard:
+        return self.cards[index]
+
+
+class _CardsPage:
+    url = "https://www.agoda.com/vi-vn/search"
+
+    def __init__(self, cards: list[_ExtractionCard]) -> None:
+        self.cards = cards
+
+    def locator(self, selector: str) -> _CardsLocator:
+        return _CardsLocator(self.cards)
+
+
+def test_first_text_uses_field_selector_timeout() -> None:
+    locator = _FieldLocator("Demo Hotel")
+
+    class Root:
+        def locator(self, selector: str) -> _FieldLocator:
+            return locator
+
+    assert first_text(Root(), ["h3"]) == "Demo Hotel"
+    assert locator.inner_text_timeouts == [FIELD_SELECTOR_TIMEOUT]
+
+
+def test_extract_from_cards_scrolls_each_card_and_keeps_record_on_scroll_failure() -> None:
+    card = _ExtractionCard(raise_on_scroll=True)
+
+    records = extract_from_cards(_CardsPage([card]), '[data-testid="property-card"]', 1)
+
+    assert card.scroll_timeouts
+    assert records[0]["hotel_name"] == "Demo Hotel"

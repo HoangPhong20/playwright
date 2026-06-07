@@ -121,3 +121,81 @@ def test_force_hotel_mode_continue_reraises_other_errors(monkeypatch) -> None:
         assert "Activities shell" in str(exc)
     else:
         raise AssertionError("Expected non-tab hotel mode errors to propagate")
+
+
+class _ResultsWaitLocator:
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def count(self) -> int:
+        return self._count
+
+
+class _ResultsWaitPage:
+    def __init__(self) -> None:
+        self.counts = {}
+        self.wait_function_calls = []
+
+    def wait_for_load_state(self, state: str, timeout: int) -> None:
+        return None
+
+    def wait_for_function(self, expression: str, *, arg, timeout: int) -> None:
+        self.wait_function_calls.append((arg, timeout))
+        self.counts['[data-testid="property-card"]'] = 1
+
+    def locator(self, selector: str) -> _ResultsWaitLocator:
+        return _ResultsWaitLocator(self.counts.get(selector, 0))
+
+
+def test_wait_for_results_ready_uses_wait_for_function() -> None:
+    page = _ResultsWaitPage()
+
+    selector = navigation_search._wait_for_results_ready(
+        page,
+        before_signature="old",
+        timeout_ms=1_000,
+        require_change=True,
+    )
+
+    assert selector == '[data-testid="property-card"]'
+    assert page.wait_function_calls
+
+
+class _PaginationFallbackPage:
+    url = "https://www.agoda.com/vi-vn/search?page=1"
+
+
+class _PaginationFallbackControl:
+    def __init__(self) -> None:
+        self.js_scroll_calls = 0
+        self.click_calls = 0
+
+    def count(self) -> int:
+        return 1
+
+    def is_visible(self, timeout: int) -> bool:
+        return True
+
+    def is_disabled(self, timeout: int) -> bool:
+        return False
+
+    def get_attribute(self, name: str, timeout: int):
+        return None
+
+    def scroll_into_view_if_needed(self, timeout: int) -> None:
+        raise TimeoutError("scroll timed out")
+
+    def evaluate(self, expression: str, timeout: int) -> None:
+        self.js_scroll_calls += 1
+
+    def click(self, timeout: int) -> None:
+        self.click_calls += 1
+
+
+def test_activate_pagination_control_uses_js_scroll_fallback(monkeypatch) -> None:
+    control = _PaginationFallbackControl()
+    monkeypatch.setattr(navigation_search, "_wait_for_results_ready", lambda *args, **kwargs: None)
+
+    assert navigation_search._activate_pagination_control(_PaginationFallbackPage(), control) is True
+    assert control.js_scroll_calls == 1
+    assert control.click_calls == 1

@@ -15,7 +15,6 @@ from agoda_crawler.extraction.parsers import (
     canonicalize_price_value as _canonicalize_price_value,
     hotel_url_key as _hotel_url_key,
     name_from_hotel_url as _name_from_hotel_url,
-    normalize_location_text as _normalize_location_text,
     parse_review_count as _parse_review_count,
     parse_review_score as _parse_review_score,
     parse_star_rating as _parse_star_rating,
@@ -24,7 +23,7 @@ from agoda_crawler.extraction.parsers import (
     raw_snippet as _raw_snippet,
 )
 from agoda_crawler.extraction.selectors import FIELD_SELECTORS
-from agoda_crawler.config import CLICK_DEFAULT
+from agoda_crawler.config import CARD_SCROLL_TIMEOUT, CLICK_DEFAULT, FIELD_SELECTOR_TIMEOUT
 from agoda_crawler.utils import compact_text, utc_now_iso
 
 
@@ -38,7 +37,7 @@ def first_text(root, selectors: List[str]) -> Optional[str]:
         try:
             if locator.count() == 0:
                 continue
-            text = compact_text(locator.inner_text(timeout=CLICK_DEFAULT))
+            text = compact_text(locator.inner_text(timeout=FIELD_SELECTOR_TIMEOUT))
         except Exception:
             continue
         if text:
@@ -52,7 +51,7 @@ def first_href(root, selectors: List[str], base_url: str) -> Optional[str]:
         try:
             if locator.count() == 0:
                 continue
-            href = locator.get_attribute("href", timeout=CLICK_DEFAULT)
+            href = locator.get_attribute("href", timeout=FIELD_SELECTOR_TIMEOUT)
         except Exception:
             continue
         if href:
@@ -66,7 +65,7 @@ def first_attr(root, selectors: List[str], attr: str) -> Optional[str]:
         try:
             if locator.count() == 0:
                 continue
-            value = locator.get_attribute(attr, timeout=CLICK_DEFAULT)
+            value = locator.get_attribute(attr, timeout=FIELD_SELECTOR_TIMEOUT)
         except Exception:
             value = None
         value = compact_text(value)
@@ -82,8 +81,8 @@ def first_image_src(root, selectors: List[str], base_url: str) -> Optional[str]:
             if locator.count() == 0:
                 continue
             src = (
-                locator.get_attribute("src", timeout=CLICK_DEFAULT)
-                or locator.get_attribute("data-src", timeout=CLICK_DEFAULT)
+                locator.get_attribute("src", timeout=FIELD_SELECTOR_TIMEOUT)
+                or locator.get_attribute("data-src", timeout=FIELD_SELECTOR_TIMEOUT)
             )
         except Exception:
             continue
@@ -117,7 +116,6 @@ def _extract_card(card, page_url: str, page_number: int) -> Optional[Dict]:
     rating_text = first_text(card, FIELD_SELECTORS["rating_text"]) or parsed["rating_text"]
     review_count_text = first_text(card, FIELD_SELECTORS["review_count_text"]) or parsed["review_count_text"]
     star_rating_text = first_text(card, FIELD_SELECTORS["star_rating_text"]) or parsed["star_rating_text"]
-    location_text = _normalize_location_text(first_text(card, FIELD_SELECTORS["location_text"]) or parsed["location_text"])
 
     return {
         "hotel_name": hotel_name,
@@ -126,7 +124,6 @@ def _extract_card(card, page_url: str, page_number: int) -> Optional[Dict]:
         "rating_text": rating_text,
         "review_count_text": review_count_text,
         "star_rating_text": star_rating_text,
-        "location_text": location_text,
         "image_url": first_image_src(card, FIELD_SELECTORS["image_url"], page_url),
         "crawled_at": utc_now_iso(),
     }
@@ -141,7 +138,6 @@ def _empty_record(name: Optional[str], url: Optional[str], page_number: int) -> 
         "rating_text": None,
         "review_count_text": None,
         "star_rating_text": None,
-        "location_text": None,
         "image_url": None,
         "crawled_at": utc_now_iso(),
     }
@@ -206,10 +202,19 @@ def extract_from_cards(page: Page, card_selector: str, page_number: int) -> List
     cards = page.locator(card_selector)
     results = []
     for idx in range(cards.count()):
-        record = _extract_card(cards.nth(idx), page.url, page_number)
+        card = cards.nth(idx)
+        _scroll_card_into_view(card)
+        record = _extract_card(card, page.url, page_number)
         if record:
             results.append(record)
     return results
+
+
+def _scroll_card_into_view(card) -> None:
+    try:
+        card.scroll_into_view_if_needed(timeout=CARD_SCROLL_TIMEOUT)
+    except Exception:
+        pass
 
 
 def extract_from_hotel_links(page: Page, page_number: int) -> List[Dict]:
@@ -277,7 +282,6 @@ def extract_from_hotel_links(page: Page, page_number: int) -> List[Dict]:
             "rating_text": first_text(container, FIELD_SELECTORS["rating_text"]) or parsed["rating_text"],
             "review_count_text": first_text(container, FIELD_SELECTORS["review_count_text"]) or parsed["review_count_text"],
             "star_rating_text": first_text(container, FIELD_SELECTORS["star_rating_text"]) or parsed["star_rating_text"],
-            "location_text": _normalize_location_text(first_text(container, FIELD_SELECTORS["location_text"]) or parsed["location_text"]),
             "image_url": first_image_src(container, FIELD_SELECTORS["image_url"], page.url),
             "crawled_at": utc_now_iso(),
         }
@@ -289,15 +293,6 @@ def extract_from_hotel_links(page: Page, page_number: int) -> List[Dict]:
 def extract_detail_fields(page: Page) -> Dict[str, Optional[str]]:
     """Extract fields available on an Agoda hotel detail page."""
     name = first_text(page, ["h1", '[data-selenium="hotel-name"]'])
-    location = _normalize_location_text(first_text(
-        page,
-        [
-            '[data-selenium="hotel-address-map"]',
-            '[data-testid*="address"]',
-            '[class*="Address"]',
-        ],
-    ))
-
     review_text = first_text(
         page,
         [
@@ -334,7 +329,6 @@ def extract_detail_fields(page: Page) -> Dict[str, Optional[str]]:
         "rating_text": rating_text,
         "review_count_text": _parse_review_count(review_text or raw_text),
         "star_rating_text": _parse_star_rating(star_text or raw_text),
-        "location_text": location,
         "image_url": image_url,
     }
 

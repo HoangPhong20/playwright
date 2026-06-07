@@ -1,4 +1,5 @@
 import sys
+from queue import Empty
 
 from agoda_crawler.config import load_dotenv
 from main import (
@@ -14,7 +15,12 @@ from main import (
     parse_destinations,
     parse_detail_fields,
 )
-from agoda_crawler.orchestration import should_fail_on_missing_price
+from agoda_crawler import orchestration
+from agoda_crawler.orchestration import (
+    actual_worker_count,
+    estimated_detail_pressure,
+    should_fail_on_missing_price,
+)
 
 
 def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
@@ -72,26 +78,19 @@ def test_coverage_gate_requires_full_unlimited_detail(monkeypatch) -> None:
     assert should_fail_on_missing_price(parse_args(env={})) is False
 
 
-def test_annotate_record_keeps_source_location() -> None:
-    record = {"hotel_name": "A", "location_text": "Thang Tam, Vung Tau"}
+def test_annotate_record_adds_job_metadata() -> None:
+    record = {"hotel_name": "A"}
 
     annotated = annotate_record(record, "Vung Tau", "2026-06-10", "2026-06-11")
 
-    assert annotated["location_text"] == "Thang Tam, Vung Tau"
-    assert annotated["location_status"] == "source"
-
-
-def test_annotate_record_does_not_invent_location() -> None:
-    record = {"hotel_name": "A", "location_text": None}
-
-    annotated = annotate_record(record, "Vung Tau", "2026-06-10", "2026-06-11")
-
-    assert annotated["location_text"] is None
-    assert "location_status" not in annotated
+    assert annotated["destination"] == "Vung Tau"
+    assert "normalized_destination" not in annotated
+    assert annotated["check_in"] == "2026-06-10"
+    assert annotated["check_out"] == "2026-06-11"
 
 
 def test_parse_detail_fields_accepts_known_fields() -> None:
-    assert parse_detail_fields("price_value,location_text") == ("price_value", "location_text")
+    assert parse_detail_fields("price_value,image_url") == ("price_value", "image_url")
 
 
 def test_parse_detail_fields_rejects_unknown_fields() -> None:
@@ -101,6 +100,15 @@ def test_parse_detail_fields_rejects_unknown_fields() -> None:
         assert "bad_field" in str(exc)
     else:
         raise AssertionError("parse_detail_fields should reject unknown fields")
+
+
+def test_parse_detail_fields_rejects_removed_location_field() -> None:
+    try:
+        parse_detail_fields("price_value,location_text")
+    except ValueError as exc:
+        assert "location_text" in str(exc)
+    else:
+        raise AssertionError("location_text should not be accepted")
 
 
 def test_parse_args_can_disable_detail_enrichment(monkeypatch) -> None:
@@ -135,7 +143,7 @@ def test_parse_args_uses_env_defaults(monkeypatch) -> None:
             "AGODA_DETAIL_TIMEOUT": "20000",
             "AGODA_FIELD_RETRY_TIMEOUT": "1200",
             "AGODA_FIELD_RETRY_COUNT": "1",
-            "AGODA_DETAIL_FIELDS": "price_value,location_text",
+            "AGODA_DETAIL_FIELDS": "price_value,image_url",
             "AGODA_ENRICH_MISSING_ONLY": "false",
             "AGODA_COMPLETE_MODE": "false",
             "AGODA_MAX_SCROLL_ROUNDS": "40",
@@ -155,7 +163,7 @@ def test_parse_args_uses_env_defaults(monkeypatch) -> None:
     assert args.detail_timeout == 20000
     assert args.field_retry_timeout == 1200
     assert args.field_retry_count == 1
-    assert args.detail_fields == "price_value,location_text"
+    assert args.detail_fields == "price_value,image_url"
     assert args.enrich_missing_only is False
     assert args.complete_mode is False
     assert args.max_scroll_rounds == 40
@@ -315,3 +323,40 @@ def test_ordered_results_restores_destination_order(monkeypatch) -> None:
         "Vung Tau",
         "Da Nang",
     ]
+
+
+def test_actual_worker_count_caps_requested_workers_to_jobs() -> None:
+    assert actual_worker_count(5, 3) == 3
+    assert actual_worker_count(5, 9) == 5
+    assert actual_worker_count(0, 3) == 1
+    assert actual_worker_count(3, 0) == 0
+
+
+def test_estimated_detail_pressure_uses_actual_workers_and_detail_concurrency() -> None:
+    assert estimated_detail_pressure(3, 5, True) == 15
+    assert estimated_detail_pressure(3, 5, False) == 0
+
+
+def test_run_crawl_jobs_uses_dynamic_queue_and_restores_order(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["main.py", "--destinations", "A,B,C"])
+    args = parse_args(env={})
+    jobs = build_crawl_jobs(args, ["A", "B", "C"], [("2026-06-01", "2026-06-02")])
+
+    def fake_worker(job_queue, _args, _write_output):
+        results = []
+        while True:
+            try:
+                job = job_queue.get_nowait()
+            except Empty:
+                break
+            try:
+                results.insert(0, CrawlJobResult(job=job, records=[]))
+            finally:
+                job_queue.task_done()
+        return results
+
+    monkeypatch.setattr(orchestration, "run_crawl_job_worker", fake_worker)
+
+    results = orchestration.run_crawl_jobs(jobs, args, worker_count=2, write_output=False)
+
+    assert [result.job.destination for result in results] == ["A", "B", "C"]

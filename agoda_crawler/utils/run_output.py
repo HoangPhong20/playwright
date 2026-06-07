@@ -1,7 +1,9 @@
 """Output and reporting helpers for Agoda crawl runs."""
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List
+import threading
+from typing import Dict, Iterable, List, Optional
+from urllib.parse import urlparse, urlunparse
 
 from agoda_crawler.jobs import CrawlJobResult
 from agoda_crawler.utils import append_jsonl, as_json
@@ -14,7 +16,6 @@ FIELDS_TO_CHECK = [
     "rating_text",
     "review_count_text",
     "star_rating_text",
-    "location_text",
     "image_url",
 ]
 
@@ -25,11 +26,9 @@ OUTPUT_RECORD_FIELDS = (
     "rating_text",
     "review_count_text",
     "star_rating_text",
-    "location_text",
     "image_url",
     "crawled_at",
     "destination",
-    "normalized_destination",
     "check_in",
     "check_out",
 )
@@ -167,12 +166,62 @@ def is_partial_record(record: Dict) -> bool:
     return not is_publishable_record(record)
 
 
-def write_crawl_results(results: List[CrawlJobResult]) -> None:
-    for result in results:
-        for record in result.records:
+class CrawlResultWriter:
+    """Append publishable records once for a crawl job."""
+
+    def __init__(self, output_path: Path) -> None:
+        self.output_path = output_path
+        self._written_keys: set[str] = set()
+        self._lock = threading.Lock()
+
+    def write_records(self, records: Iterable[Dict]) -> int:
+        written = 0
+        for record in records:
             if not is_publishable_record(record):
                 continue
-            append_jsonl(result.job.output_path, project_output_record(record))
+            identity = output_record_identity(record)
+            with self._lock:
+                if identity in self._written_keys:
+                    continue
+                append_jsonl(self.output_path, project_output_record(record))
+                self._written_keys.add(identity)
+                written += 1
+        return written
+
+    def write_result(self, result: CrawlJobResult) -> int:
+        return self.write_records(result.records)
+
+
+def output_record_identity(record: Dict) -> str:
+    """Return a stable output identity used only to avoid append duplicates."""
+    hotel_url = record.get("canonical_url") or _normalized_output_url(record.get("hotel_url") or "")
+    context = (
+        record.get("destination") or "",
+        record.get("check_in") or "",
+        record.get("check_out") or "",
+    )
+    return "|".join((*context, hotel_url or record.get("hotel_url") or ""))
+
+
+def _normalized_output_url(value: str) -> str:
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        return value.strip().lower()
+    path = parsed.path.rstrip("/").lower()
+    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", "", ""))
+
+
+def write_crawl_result(result: CrawlJobResult, writer: Optional[CrawlResultWriter] = None) -> int:
+    """Append publishable records for one finished crawl job."""
+    active_writer = writer or CrawlResultWriter(result.job.output_path)
+    return active_writer.write_result(result)
+
+
+def write_crawl_results(results: List[CrawlJobResult]) -> None:
+    for result in results:
+        write_crawl_result(result)
 
 
 def write_latest_outputs(records: List[Dict]) -> None:

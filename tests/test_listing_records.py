@@ -3,10 +3,9 @@ from agoda_crawler.listing.records import merge_records_into_results
 
 def test_merge_records_into_results_replaces_partial_with_url_record() -> None:
     records_by_key = {
-        "partial:demo hotel|vung tau": {
+        "partial:demo hotel": {
             "hotel_name": "Demo Hotel",
             "hotel_url": None,
-            "location_text": "Vung Tau",
             "price_value": "1000",
         }
     }
@@ -18,7 +17,6 @@ def test_merge_records_into_results_replaces_partial_with_url_record() -> None:
                 "hotel_name": "Demo Hotel",
                 "hotel_url": "https://www.agoda.com/demo/hotel/demo-hotel.html",
                 "canonical_url": "https://www.agoda.com/demo/hotel/demo-hotel.html",
-                "location_text": "Vung Tau",
                 "price_value": None,
             }
         ],

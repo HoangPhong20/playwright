@@ -15,7 +15,6 @@ from agoda_crawler.extraction import _empty_record
 from agoda_crawler.extraction.parsers import (
     hotel_url_key as _hotel_url_key,
     name_from_hotel_url as _name_from_hotel_url,
-    normalize_location_text as _normalize_location_text,
     parse_textual_fallback as _parse_textual_fallback,
 )
 from agoda_crawler.utils import compact_text
@@ -174,7 +173,6 @@ def collect_listing_snapshot(
         else:
             record_key = _partial_record_key(
                 name=name,
-                location_text=_parse_textual_fallback(raw_text)["location_text"],
                 raw_text=raw_text,
                 image_url=image_url,
                 page_number=page_number,
@@ -209,7 +207,6 @@ def collect_listing_snapshot(
         record["rating_text"] = parsed["rating_text"]
         record["review_count_text"] = parsed["review_count_text"]
         record["star_rating_text"] = parsed["star_rating_text"]
-        record["location_text"] = _normalize_location_text(parsed["location_text"])
 
         if image_url:
             record["image_url"] = urljoin(page.url, image_url)
@@ -517,7 +514,6 @@ def _looks_like_non_name(value: str) -> bool:
 
 def _partial_record_key(
     name: Optional[str],
-    location_text: Optional[str],
     raw_text: Optional[str],
     image_url: Optional[str],
     page_number: int,
@@ -526,7 +522,7 @@ def _partial_record_key(
     if name:
         return (
             "partial:"
-            f"{_identity_part(name)}|{_identity_part(location_text)}|page:{page_number}"
+            f"{_identity_part(name)}|page:{page_number}"
         )
 
     source = compact_text(raw_text) or compact_text(image_url) or str(card_index)

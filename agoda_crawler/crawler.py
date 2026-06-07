@@ -1,6 +1,6 @@
 """Agoda hotel search crawler."""
 import time
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from playwright.sync_api import Browser, Page, sync_playwright
 
@@ -210,6 +210,7 @@ def crawl_agoda_search(
     detail_fields: tuple[str, ...] = DEFAULT_DETAIL_ENRICH_FIELDS,
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
+    on_listing_records: Optional[Callable[[List[Dict]], None]] = None,
 ) -> List[Dict]:
     """
     Crawl Agoda hotel search results and return a list of hotel records.
@@ -250,6 +251,7 @@ def crawl_agoda_search(
                 detail_fields=detail_fields,
                 field_retry_timeout=field_retry_timeout,
                 field_retry_count=field_retry_count,
+                on_listing_records=on_listing_records,
             )
         finally:
             if browser is not None:
@@ -283,6 +285,7 @@ def crawl_agoda_search_with_browser(
     detail_fields: tuple[str, ...] = DEFAULT_DETAIL_ENRICH_FIELDS,
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
+    on_listing_records: Optional[Callable[[List[Dict]], None]] = None,
 ) -> List[Dict]:
     """Crawl one Agoda search using an existing browser instance."""
     _validate_supported_occupancy(adults, rooms, children)
@@ -341,6 +344,7 @@ def crawl_agoda_search_with_browser(
         page_statuses[current_page] = "collected"
         _update_page_debug_status(current_page, "collected")
         new_count = _merge_records_into_results(results_by_key, page_records)
+        _publish_listing_records(results_by_key, page_records, on_listing_records)
         if _is_low_new_record_page(new_count):
             low_new_record_rounds += 1
         else:
@@ -427,6 +431,7 @@ def crawl_agoda_search_with_browser(
                 page_unique_url_counts[target_page] = len(candidate_state.canonical_urls)
                 if evidence.get("verified"):
                     new_count = _merge_records_into_results(results_by_key, candidate_records)
+                    _publish_listing_records(results_by_key, candidate_records, on_listing_records)
                     if _is_low_new_record_page(new_count):
                         low_new_record_rounds += 1
                     else:
@@ -535,3 +540,13 @@ def crawl_agoda_search_with_browser(
                 log_ignored_error("Context close failed", exc)
 
     return list(results_by_key.values())
+
+
+def _publish_listing_records(
+    records_by_key: Dict[str, Dict],
+    page_records: List[Dict],
+    callback: Optional[Callable[[List[Dict]], None]],
+) -> None:
+    if callback is None:
+        return
+    callback(_deduped_page_records(records_by_key, page_records))

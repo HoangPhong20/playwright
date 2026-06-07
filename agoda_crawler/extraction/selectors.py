@@ -64,11 +64,6 @@ FIELD_SELECTORS = {
         '[class*="StarRating"]',
         '[aria-label*="star"]',
     ],
-    "location_text": [
-        '[data-selenium="area-city"]',
-        '[data-testid="address"]',
-        '[data-selenium="hotel-address"]',
-    ],
     "image_url": [
         "img",
         "[data-testid='property-card-image'] img",
@@ -80,6 +75,39 @@ COOKIE_BUTTON_SELECTORS = [
     'button:has-text("Accept")',
     'button:has-text("I agree")',
     'button[aria-label*="accept" i]',
+]
+
+PAGE_POPUP_BUTTON_SELECTORS = [
+    *COOKIE_BUTTON_SELECTORS,
+    'button[aria-label*="close" i]',
+    '[role="button"][aria-label*="close" i]',
+    'button[data-testid*="close" i]',
+    '[data-testid*="close" i]',
+    'button[data-selenium*="close" i]',
+    '[data-selenium*="close" i]',
+    'button[data-element-name*="close" i]',
+    '[data-element-name*="close" i]',
+    '[data-testid*="login" i] button[aria-label*="close" i]',
+    '[data-selenium*="login" i] button[aria-label*="close" i]',
+    '[data-testid*="language" i] button[aria-label*="close" i]',
+    '[data-testid*="currency" i] button[aria-label*="close" i]',
+    '[data-testid*="promotion" i] button[aria-label*="close" i]',
+    '[role="dialog"] button:has-text("Close")',
+    '[role="dialog"] button:has-text("OK")',
+    '[role="dialog"] button:has-text("No thanks")',
+    '[role="dialog"] button:has-text("Maybe later")',
+    '[aria-modal="true"] button:has-text("Close")',
+    '[aria-modal="true"] button:has-text("OK")',
+    '[aria-modal="true"] button:has-text("No thanks")',
+    '[aria-modal="true"] button:has-text("Maybe later")',
+    '[class*="modal" i] button:has-text("Close")',
+    '[class*="modal" i] button:has-text("OK")',
+    '[class*="modal" i] button:has-text("No thanks")',
+    '[class*="modal" i] button:has-text("Maybe later")',
+    'button:has-text("No thanks")',
+    'button:has-text("Maybe later")',
+    'button:has-text("Not now")',
+    'button:has-text("Skip")',
 ]
 
 DESTINATION_INPUT_SELECTORS = [

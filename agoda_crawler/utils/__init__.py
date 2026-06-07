@@ -11,7 +11,7 @@ _JSONL_LOCKS_GUARD = threading.Lock()
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def compact_text(value: Optional[str]) -> Optional[str]:

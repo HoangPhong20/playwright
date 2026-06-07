@@ -108,14 +108,17 @@ Nếu máy hoặc network yếu, hạ detail concurrency trước:
 
 ```text
 AGODA_DETAIL_CONCURRENCY=2
-AGODA_DETAIL_WORKERS=2
 AGODA_SCROLL_WAIT_MS=800
 AGODA_SCROLL_PAUSE=800
 ```
 
+`AGODA_DETAIL_WORKERS` là alias cũ; cấu hình đang điều khiển thực tế là
+`AGODA_DETAIL_CONCURRENCY` hoặc `--detail-concurrency`.
+
 Crawler thu listing record ngay trong từng vòng scroll, nên scroll tới đâu thì
-dữ liệu trong page crawl được merge tới đó. JSONL cuối vẫn được ghi sau khi job
-hoàn tất detail enrichment.
+dữ liệu trong page crawl được merge tới đó. JSONL publishable được append ngay
+sau khi từng city/date job hoàn tất detail enrichment, giúp run dài ít mất dữ
+liệu hơn nếu một job sau đó lỗi.
 Trong lúc scroll, crawler dùng snapshot nhẹ cho các vòng poll và chỉ chạy
 snapshot đầy đủ định kỳ/cuối page để giảm số lần quét DOM/HTML lớn.
 
@@ -129,7 +132,7 @@ site live, bỏ `image` khỏi `AGODA_BLOCK_RESOURCE_TYPES`.
 - `--date-start` / `--date-end`: khoảng check-in batch. Mỗi check-in mặc định 1 đêm.
 - `--check-in` / `--check-out`: dùng cho một stay cụ thể; khi dùng cặp này, đặt `--date-start= --date-end=`.
 - `--max-pages`: số result pages tối đa mỗi city/date job; `0` là tất cả.
-- `--workers`: số city/date jobs chạy song song.
+- `--workers`: số city/date jobs chạy song song trong global worker pool.
 - `--enrich-details` / `--no-enrich-details`: bật/tắt mở trang hotel detail.
 - `--max-detail-pages`: giới hạn detail page; `0` là không giới hạn.
 - `--detail-concurrency`: số detail pages song song trong mỗi job.
@@ -164,9 +167,9 @@ File thường gặp:
 Khi crawl xong, kiểm tra log:
 
 - `Run: destinations=... stays=... jobs=... pages=all`
-- `Concurrency: workers=3 detail=3`
+- `Concurrency: requested_workers=... actual_workers=... detail_concurrency=... detail_pressure=... scheduling=global`
 - `Page N done: records=... new=... total=... time=...`
-- `Detail: enriching ... records with 3 workers`
+- `Detail: enriching ... records with 3 workers (isolated browser/context per worker)`
 - `Timing total: search=... listing=... detail=... total=... bottleneck=...`
 - `Network: blocking types=font,image,media keywords=7`
 - `VERIFY_COVERAGE_STATUS=success`
@@ -210,5 +213,8 @@ python -B -m pytest -p no:cacheprovider
 - Không commit credentials, cookies, PII hoặc crawl output lớn.
 - `data/` và `debug/` là transient; dùng `--output-dir` riêng cho run cần so sánh.
 - Full detail tốn thời gian vì mỗi hotel có thể cần mở detail page.
-- Với `workers=3` và `detail-concurrency=3`, runtime có thể mở khoảng 9
-  detail pages song song; nên dùng máy RAM 8 GB tối thiểu, 16 GB tốt hơn.
+- Worker pool là global cho toàn bộ date range. Với 3 city x 3 ngày và
+  `workers=5`, crawler có thể chạy tối đa 5 city/date jobs đồng thời.
+- Detail pressure xấp xỉ `actual_workers * detail_concurrency`; với
+  `actual_workers=3` và `detail_concurrency=3`, runtime có thể mở khoảng 9
+  detail pages song song. Nên dùng máy RAM 8 GB tối thiểu, 16 GB tốt hơn.

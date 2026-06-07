@@ -145,7 +145,7 @@ def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
         "--detail-workers",
         type=int,
         default=env_int(config, "AGODA_DETAIL_WORKERS", DEFAULT_DETAIL_WORKERS),
-        help="Parallel detail pages per crawl job",
+        help="Legacy alias for parallel detail pages; --detail-concurrency takes precedence",
     )
     parser.add_argument(
         "--detail-concurrency",

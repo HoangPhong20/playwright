@@ -4,7 +4,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List
 
-from agoda_crawler.navigation.urls import normalize_agoda_destination
 from agoda_crawler.utils import make_daily_output_path
 
 
@@ -58,11 +57,7 @@ def iter_stays(args) -> List[tuple[str, str]]:
 
 def annotate_record(record: Dict, destination: str, check_in: str, check_out: str) -> Dict:
     enriched = dict(record)
-    normalized_destination = normalize_agoda_destination(destination)
-    if enriched.get("location_text"):
-        enriched["location_status"] = "source"
     enriched["destination"] = destination
-    enriched["normalized_destination"] = normalized_destination
     enriched["check_in"] = check_in
     enriched["check_out"] = check_out
     return enriched
