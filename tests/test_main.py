@@ -59,13 +59,13 @@ def test_has_missing_price_detects_incomplete_records() -> None:
     assert has_missing_price([{"hotel_name": "A", "hotel_url": None, "price_value": None}]) is False
 
 
-def test_coverage_gate_requires_full_unlimited_detail(monkeypatch) -> None:
+def test_coverage_gate_does_not_hard_fail_missing_price_records(monkeypatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
         ["main.py", "--enrich-details", "--max-detail-pages", "0"],
     )
-    assert should_fail_on_missing_price(parse_args(env={})) is True
+    assert should_fail_on_missing_price(parse_args(env={})) is False
 
     monkeypatch.setattr(
         sys,

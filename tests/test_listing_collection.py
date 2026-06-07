@@ -1,4 +1,8 @@
-from agoda_crawler.listing.collection import collect_listing_snapshot, normalize_hotel_url
+from agoda_crawler.listing.collection import (
+    _property_url_map_from_html,
+    collect_listing_snapshot,
+    normalize_hotel_url,
+)
 
 
 def test_normalize_hotel_url_removes_tracking_params() -> None:
@@ -274,6 +278,66 @@ def test_collect_listing_snapshot_merges_partial_with_url_by_property_id() -> No
     assert snapshot.records[0]["listing_property_id"] == "123"
     assert snapshot.records[0]["hotel_url"] == "https://www.agoda.com/vi-vn/lazy-hotel/hotel/vung-tau-vn.html"
     assert snapshot.records[0]["record_kind"] == "full_record"
+
+
+def test_property_url_map_from_html_reads_escaped_url_near_property_id() -> None:
+    html = (
+        '<script>{"propertyId":"123",'
+        '"landingURL":"\\/vi-vn\\/resolved-hotel\\/hotel\\/vung-tau-vn.html?cid=1"}'
+        "</script>"
+    )
+
+    result = _property_url_map_from_html(
+        html,
+        ["123"],
+        "https://www.agoda.com/vi-vn/search?city=17190",
+    )
+
+    assert result["123"]["url"] == "https://www.agoda.com/vi-vn/resolved-hotel/hotel/vung-tau-vn.html"
+    assert result["123"]["source"] == "property_url_map:html_near_property_id"
+
+
+class _PropertyUrlMapPage:
+    url = "https://www.agoda.com/vi-vn/search?city=17190"
+
+    def evaluate(self, script: str, *args):
+        if "scrollY" in script:
+            return 0
+        if "PROPERTY_URL_HTML" in script:
+            return (
+                '<script>{"propertyId":"123",'
+                '"url":"\\/vi-vn\\/resolved-hotel\\/hotel\\/vung-tau-vn.html?cid=1"}'
+                "</script>"
+            )
+        if "document.documentElement" in script:
+            return []
+        return [
+            {
+                "urls": [],
+                "anchorHrefs": [],
+                "name": "Resolved Hotel",
+                "text": "Mo Resolved Hotel trong the moi",
+                "imageUrl": "",
+                "propertyId": "123",
+                "dataSelenium": "hotel-item",
+                "sourceSelector": '[data-selenium="hotel-item"]',
+            }
+        ]
+
+
+def test_collect_listing_snapshot_resolves_missing_url_from_property_url_map() -> None:
+    snapshot = collect_listing_snapshot(_PropertyUrlMapPage(), '[data-selenium="hotel-item"]', 1)
+
+    assert len(snapshot.records) == 1
+    record = snapshot.records[0]
+    assert record["hotel_url"] == "https://www.agoda.com/vi-vn/resolved-hotel/hotel/vung-tau-vn.html"
+    assert record["collect_status"] == "ok"
+    assert record["record_kind"] == "full_record"
+    assert record["url_resolution_source"] == "property_url_map:html_near_property_id"
+    assert snapshot.metrics.cards_with_url_before_resolve == 0
+    assert snapshot.metrics.cards_with_url_after_resolve == 1
+    assert snapshot.metrics.property_url_map_count == 1
+    assert snapshot.metrics.property_url_resolved_count == 1
 
 
 class _ImageSlidePage:

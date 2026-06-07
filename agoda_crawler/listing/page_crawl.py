@@ -373,6 +373,10 @@ def attach_listing_metrics(
     record["_listing_embedded_url_count"] = metrics.embedded_url_count
     record["_listing_candidate_url_count"] = metrics.candidate_url_count
     record["_listing_valid_url_count"] = metrics.valid_url_count
+    record["_listing_cards_with_url_before_resolve"] = metrics.cards_with_url_before_resolve
+    record["_listing_cards_with_url_after_resolve"] = metrics.cards_with_url_after_resolve
+    record["_listing_property_url_map_count"] = metrics.property_url_map_count
+    record["_listing_property_url_resolved_count"] = metrics.property_url_resolved_count
     record["_listing_duplicate_url_count"] = metrics.duplicate_url_count
     record["_listing_unique_url_count"] = metrics.unique_canonical_url_count
     record["_listing_unique_record_count"] = metrics.unique_hotel_count

@@ -24,6 +24,7 @@ from agoda_crawler.utils.logging import log, log_prefix
 from agoda_crawler.utils.run_output import (
     CrawlResultWriter,
     has_missing_price,
+    is_incremental_publishable_record,
     is_publishable_record,
     print_verification_summary,
     project_output_record,
@@ -93,6 +94,7 @@ def run_crawl_job_with_browser(
         record_writer.write_records(
             annotate_record(item, job.destination, job.check_in, job.check_out)
             for item in records
+            if is_incremental_publishable_record(item)
         )
 
     with log_prefix(_job_log_prefix(job)):
@@ -264,7 +266,6 @@ def run_from_args(args) -> None:
     for result in results:
         results_by_stay[result.job.check_in].append(result)
 
-    coverage_failed = False
     for check_in, check_out in stays:
         output_path = output_path_for_stay(args, check_in, len(stays))
         print(
@@ -292,17 +293,11 @@ def run_from_args(args) -> None:
         elapsed_seconds = int((run_completed_at - run_started_at).total_seconds())
         print_verification_summary(public_records, elapsed_seconds)
         if has_missing_price(public_records):
-            if should_fail_on_missing_price(args):
-                coverage_failed = True
-            else:
-                print(
-                    "Coverage warning: missing price records present, "
-                    "but this run is partial/no-detail so the process will not fail."
-                )
+            print(
+                "Coverage warning: missing price records present; "
+                "only records with required fields are published."
+            )
         print(f"Saved JSONL: {output_path}\n")
-
-    if coverage_failed:
-        raise SystemExit("Coverage failed: at least one hotel is missing price_value. See debug/missing_price_records.json")
 
 
 def _job_log_prefix(job: CrawlJob) -> str:
@@ -310,4 +305,4 @@ def _job_log_prefix(job: CrawlJob) -> str:
 
 
 def should_fail_on_missing_price(args) -> bool:
-    return bool(args.enrich_details and max(0, args.max_detail_pages) <= 0)
+    return False

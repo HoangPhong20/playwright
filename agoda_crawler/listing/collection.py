@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html as html_lib
 import re
 import unicodedata
 from dataclasses import asdict, dataclass, field
@@ -53,6 +54,10 @@ class ListingCollectionMetrics:
     embedded_url_count: int = 0
     candidate_url_count: int = 0
     valid_url_count: int = 0
+    cards_with_url_before_resolve: int = 0
+    cards_with_url_after_resolve: int = 0
+    property_url_map_count: int = 0
+    property_url_resolved_count: int = 0
     unique_canonical_url_count: int = 0
     duplicate_url_count: int = 0
     unique_hotel_count: int = 0
@@ -127,6 +132,15 @@ def collect_listing_snapshot(
     canonical_url_keys: set[str] = set()
     invalid_card_samples: List[Dict[str, Any]] = []
     property_key_index: Dict[str, str] = {}
+    property_ids = [
+        property_id
+        for raw_card in candidate_cards
+        if (property_id := _property_id(raw_card))
+    ]
+    property_url_map = _evaluate_property_url_map(page, property_ids)
+    cards_with_url_before_resolve = 0
+    cards_with_url_after_resolve = 0
+    property_url_resolved_count = 0
 
     for card_index, raw_card in enumerate(candidate_cards):
         raw_urls = [value for value in raw_card.get("urls", []) if value]
@@ -138,8 +152,17 @@ def collect_listing_snapshot(
             for raw_url in raw_urls
             if (normalized := normalize_hotel_url(raw_url, page.url))
         ]
+        if normalized_candidates:
+            cards_with_url_before_resolve += 1
+        property_id = _property_id(raw_card)
+        resolved_url_info = property_url_map.get(property_id or "")
+        if not normalized_candidates and resolved_url_info:
+            normalized_candidates.append(resolved_url_info["url"])
+            property_url_resolved_count += 1
         valid_url_count += len(normalized_candidates)
         normalized_urls = _unique_values(normalized_candidates)
+        if normalized_urls:
+            cards_with_url_after_resolve += 1
 
         raw_text = compact_text(raw_card.get("text"))
         explicit_name = _clean_hotel_name(
@@ -151,7 +174,6 @@ def collect_listing_snapshot(
             cards_without_name_count += 1
 
         image_url = raw_card.get("imageUrl")
-        property_id = _property_id(raw_card)
         property_key = f"property:{property_id}" if property_id else None
         if not normalized_urls:
             cards_without_url_count += 1
@@ -195,6 +217,14 @@ def collect_listing_snapshot(
         record["candidate_urls"] = normalized_urls
         record["raw_candidate_urls"] = _unique_values(raw_urls)
         record["url_sources"] = raw_card.get("urlSources") or []
+        if resolved_url_info and hotel_url == resolved_url_info["url"]:
+            record["url_sources"].append(
+                {
+                    "source": resolved_url_info["source"],
+                    "value": resolved_url_info["url"],
+                }
+            )
+            record["url_resolution_source"] = resolved_url_info["source"]
         record["available_anchor_hrefs"] = raw_card.get("anchorHrefs") or []
         record["card_source"] = raw_card.get("sourceSelector")
         record["card_tag"] = raw_card.get("tagName")
@@ -224,6 +254,7 @@ def collect_listing_snapshot(
                 "available_anchor_hrefs": raw_card.get("anchorHrefs") or [],
                 "raw_candidate_urls": _unique_values(raw_urls),
                 "url_sources": raw_card.get("urlSources") or [],
+                "property_url_map_count": len(property_url_map),
                 "selector": raw_card.get("sourceSelector"),
                 "property_id": property_id,
                 "card_source": {
@@ -253,6 +284,10 @@ def collect_listing_snapshot(
         embedded_url_count=len(embedded_cards),
         candidate_url_count=candidate_url_count,
         valid_url_count=valid_url_count,
+        cards_with_url_before_resolve=cards_with_url_before_resolve,
+        cards_with_url_after_resolve=cards_with_url_after_resolve,
+        property_url_map_count=len(property_url_map),
+        property_url_resolved_count=property_url_resolved_count,
         unique_canonical_url_count=len(canonical_url_keys),
         duplicate_url_count=max(0, valid_url_count - len(canonical_url_keys)),
         unique_hotel_count=unique_hotel_count,
@@ -559,6 +594,94 @@ def _merge_record_fields(record: Dict, other: Dict) -> None:
         if value and not record.get(field):
             record[field] = value
     _merge_card_urls(record, list(other.get("candidate_urls") or []))
+
+
+def _evaluate_property_url_map(page: Page, property_ids: List[str]) -> Dict[str, Dict[str, str]]:
+    unique_property_ids = _unique_values([value for value in property_ids if value])
+    if not unique_property_ids:
+        return {}
+
+    try:
+        html = page.evaluate(
+            """
+            () => {
+                /* PROPERTY_URL_HTML */
+                const scripts = Array.from(document.querySelectorAll('script'))
+                    .map((script) => script.textContent || '')
+                    .join('\\n');
+                const body = document.documentElement
+                    ? (document.documentElement.innerHTML || '')
+                    : '';
+                return `${body}\\n${scripts}`;
+            }
+            """
+        )
+    except Exception:
+        return {}
+    if not isinstance(html, str) or not html:
+        return {}
+    return _property_url_map_from_html(html, unique_property_ids, page.url)
+
+
+def _property_url_map_from_html(
+    html: str,
+    property_ids: List[str],
+    base_url: str,
+) -> Dict[str, Dict[str, str]]:
+    decoded = _decode_embedded_html(html)
+    result: Dict[str, Dict[str, str]] = {}
+    for property_id in property_ids:
+        if property_id in result:
+            continue
+        resolved = _find_hotel_url_near_property_id(decoded, property_id, base_url)
+        if resolved:
+            result[property_id] = {
+                "url": resolved,
+                "source": "property_url_map:html_near_property_id",
+            }
+    return result
+
+
+def _decode_embedded_html(value: str) -> str:
+    return (
+        html_lib.unescape(value)
+        .replace("\\u002F", "/")
+        .replace("\\/", "/")
+        .replace("\\u0026", "&")
+    )
+
+
+def _find_hotel_url_near_property_id(
+    html: str,
+    property_id: str,
+    base_url: str,
+    window_size: int = 5_000,
+) -> Optional[str]:
+    if not property_id:
+        return None
+
+    for match in re.finditer(re.escape(str(property_id)), html):
+        start = max(0, match.start() - window_size)
+        end = min(len(html), match.end() + window_size)
+        window = html[start:end]
+        for raw_url in _hotel_urls_from_text(window):
+            normalized = normalize_hotel_url(raw_url, base_url)
+            if normalized:
+                return normalized
+    return None
+
+
+def _hotel_urls_from_text(value: str) -> List[str]:
+    patterns = [
+        r"https?://(?:www\.)?agoda\.com/[^\"'<>\\\s{}\[\]]+?/hotel/(?:all/)?[^\"'<>\\\s{}\[\]]+?\.html(?:\?[^\"'<>\\\s{}\[\]]*)?",
+        r"/[a-z]{2}-[a-z]{2}/[^\"'<>\\\s{}\[\]]+?/hotel/(?:all/)?[^\"'<>\\\s{}\[\]]+?\.html(?:\?[^\"'<>\\\s{}\[\]]*)?",
+        r"/[^\"'<>\\\s{}\[\]]+?/hotel/(?:all/)?[^\"'<>\\\s{}\[\]]+?\.html(?:\?[^\"'<>\\\s{}\[\]]*)?",
+    ]
+    urls: List[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, value, flags=re.IGNORECASE):
+            urls.append(match.group(0).rstrip(".,);"))
+    return _unique_values(urls)
 
 
 def _evaluate_embedded_hotel_url_cards(page: Page) -> List[Dict]:

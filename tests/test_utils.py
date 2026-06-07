@@ -7,6 +7,8 @@ from agoda_crawler.utils import append_jsonl, utc_now_iso
 from agoda_crawler.utils.logging import log_ignored_error, log_prefix
 from agoda_crawler.utils.run_output import (
     CrawlResultWriter,
+    is_incremental_publishable_record,
+    is_publishable_record,
     print_verification_summary,
     project_output_record,
     write_crawl_result,
@@ -49,19 +51,30 @@ def test_crawl_result_writer_skips_final_duplicate_after_early_write(tmp_path) -
     assert json.loads(lines[0])["image_url"] is None
 
 
-def test_crawl_result_writer_writes_record_that_becomes_publishable_later(tmp_path) -> None:
+def test_crawl_result_writer_skips_record_with_missing_price(tmp_path) -> None:
     output_path = tmp_path / "output.jsonl"
     writer = CrawlResultWriter(output_path)
-    early_record = _publishable_record(price_value=None)
-    final_record = _publishable_record(price_value="1000000")
+    missing_price = _publishable_record(price_value=None)
     job = CrawlJob("Vung Tau", "2026-06-10", "2026-06-11", output_path)
 
-    assert writer.write_records([early_record]) == 0
-    assert write_crawl_result(CrawlJobResult(job, [final_record]), writer) == 1
+    assert writer.write_records([missing_price]) == 0
+    assert write_crawl_result(CrawlJobResult(job, [missing_price]), writer) == 0
 
-    lines = output_path.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1
-    assert json.loads(lines[0])["price_value"] == "1000000"
+    assert not output_path.exists()
+
+
+def test_publish_requires_price_and_rating_but_not_review() -> None:
+    missing_price = _publishable_record(price_value=None)
+    missing_rating = _publishable_record(rating_text=None)
+    missing_review = _publishable_record(review_count_text=None)
+    complete = _publishable_record()
+
+    assert is_publishable_record(missing_price) is False
+    assert is_publishable_record(missing_rating) is False
+    assert is_publishable_record(missing_review) is True
+    assert is_incremental_publishable_record(missing_price) is False
+    assert is_incremental_publishable_record(missing_review) is False
+    assert is_incremental_publishable_record(complete) is True
 
 
 def test_log_ignored_error_includes_context_type_and_prefix(capsys) -> None:

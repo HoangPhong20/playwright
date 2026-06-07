@@ -37,7 +37,6 @@ REQUIRED_OUTPUT_FIELDS = (
     "hotel_url",
     "price_value",
     "rating_text",
-    "review_count_text",
 )
 
 
@@ -49,6 +48,13 @@ def project_output_record(record: Dict) -> Dict:
 def is_publishable_record(record: Dict) -> bool:
     """Return True when a record meets the public output coverage bar."""
     return all(record.get(field) for field in REQUIRED_OUTPUT_FIELDS)
+
+
+def is_incremental_publishable_record(record: Dict) -> bool:
+    """Return True when an early listing record is complete enough to append."""
+    if not is_publishable_record(record):
+        return False
+    return bool(record.get("review_count_text"))
 
 
 def summarize(records: List[Dict]) -> None:
