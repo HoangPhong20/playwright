@@ -19,6 +19,7 @@ class CrawlJob:
 class CrawlJobResult:
     job: CrawlJob
     records: List[Dict]
+    debug_records: List[Dict] | None = None
 
 
 def parse_destinations(destinations: str, fallback: str) -> List[str]:

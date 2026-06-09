@@ -17,7 +17,6 @@ from agoda_crawler.extraction.parsers import (
     name_from_hotel_url as _name_from_hotel_url,
     parse_review_count as _parse_review_count,
     parse_review_score as _parse_review_score,
-    parse_star_rating as _parse_star_rating,
     parse_textual_fallback as _parse_textual_fallback,
     price_value_from_text as _price_value_from_text,
     raw_snippet as _raw_snippet,
@@ -115,7 +114,6 @@ def _extract_card(card, page_url: str, page_number: int) -> Optional[Dict]:
     )
     rating_text = first_text(card, FIELD_SELECTORS["rating_text"]) or parsed["rating_text"]
     review_count_text = first_text(card, FIELD_SELECTORS["review_count_text"]) or parsed["review_count_text"]
-    star_rating_text = first_text(card, FIELD_SELECTORS["star_rating_text"]) or parsed["star_rating_text"]
 
     return {
         "hotel_name": hotel_name,
@@ -123,7 +121,6 @@ def _extract_card(card, page_url: str, page_number: int) -> Optional[Dict]:
         "price_value": price_value,
         "rating_text": rating_text,
         "review_count_text": review_count_text,
-        "star_rating_text": star_rating_text,
         "image_url": first_image_src(card, FIELD_SELECTORS["image_url"], page_url),
         "crawled_at": utc_now_iso(),
     }
@@ -137,7 +134,6 @@ def _empty_record(name: Optional[str], url: Optional[str], page_number: int) -> 
         "price_value": None,
         "rating_text": None,
         "review_count_text": None,
-        "star_rating_text": None,
         "image_url": None,
         "crawled_at": utc_now_iso(),
     }
@@ -281,7 +277,6 @@ def extract_from_hotel_links(page: Page, page_number: int) -> List[Dict]:
             "price_value": price_value,
             "rating_text": first_text(container, FIELD_SELECTORS["rating_text"]) or parsed["rating_text"],
             "review_count_text": first_text(container, FIELD_SELECTORS["review_count_text"]) or parsed["review_count_text"],
-            "star_rating_text": first_text(container, FIELD_SELECTORS["star_rating_text"]) or parsed["star_rating_text"],
             "image_url": first_image_src(container, FIELD_SELECTORS["image_url"], page.url),
             "crawled_at": utc_now_iso(),
         }
@@ -301,7 +296,6 @@ def extract_detail_fields(page: Page) -> Dict[str, Optional[str]]:
             '[class*="ReviewScore"]',
         ],
     )
-    star_text = first_attr(page, ['[aria-label*="sao" i]', '[aria-label*="star" i]'], "aria-label")
     display_price_raw = first_text(
         page,
         [
@@ -321,14 +315,17 @@ def extract_detail_fields(page: Page) -> Dict[str, Optional[str]]:
     image_url = _first_detail_image(page)
     rating_text = _parse_review_score(review_text or raw_text)
 
-    price_value = _price_value_from_text(display_price_raw or "") or _price_value_from_text(raw_text)
+    price_value = (
+        _price_value_from_text(display_price_raw or "")
+        or _price_value_from_text(raw_text)
+        or _price_from_detail_scripts(page)
+    )
 
     return {
         "hotel_name": name,
         "price_value": price_value,
         "rating_text": rating_text,
         "review_count_text": _parse_review_count(review_text or raw_text),
-        "star_rating_text": _parse_star_rating(star_text or raw_text),
         "image_url": image_url,
     }
 
@@ -358,6 +355,65 @@ def _first_detail_image(page: Page) -> Optional[str]:
         if fallback is None and ("pix" in lowered or "agoda.net" in lowered):
             fallback = src
     return fallback
+
+
+def _price_from_detail_scripts(page: Page) -> Optional[str]:
+    try:
+        script_texts = page.evaluate(
+            """
+            () => Array.from(document.scripts)
+                .map((script) => script.textContent || '')
+                .filter((text) => /price/i.test(text))
+                .slice(0, 80)
+            """
+        )
+    except Exception:
+        script_texts = None
+
+    if isinstance(script_texts, list):
+        for text in script_texts:
+            price_value = _price_from_json_like_text(str(text or ""))
+            if price_value:
+                return price_value
+        return None
+
+    scripts = page.locator("script")
+    try:
+        count = min(scripts.count(), 80)
+    except Exception:
+        return None
+
+    for idx in range(count):
+        script = scripts.nth(idx)
+        try:
+            text = script.inner_text(timeout=FIELD_SELECTOR_TIMEOUT)
+        except Exception:
+            continue
+        price_value = _price_from_json_like_text(text or "")
+        if price_value:
+            return price_value
+    return None
+
+
+def _price_from_json_like_text(text: str) -> Optional[str]:
+    if not text or "price" not in text.lower():
+        return None
+
+    price_key = (
+        r"(?:displayPrice|display_price|finalPrice|final_price|roomPrice|"
+        r"room_price|averagePrice|average_price|priceValue|price_value|price)"
+    )
+    patterns = [
+        rf'"{price_key}"\s*:\s*"([^"]+)"',
+        rf'"{price_key}"\s*:\s*(\d{{4,}}(?:\.\d+)?)',
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            raw_value = match.group(1)
+            parsed = _price_value_from_text(raw_value) or _canonicalize_price_value(f"VND {raw_value}")
+            if parsed:
+                return parsed
+    return None
 
 
 def extract_page_results(page: Page, card_selector: str, page_number: int) -> List[Dict]:

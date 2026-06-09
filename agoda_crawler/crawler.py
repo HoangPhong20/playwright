@@ -22,6 +22,7 @@ from agoda_crawler.enrichment.detail import (
     needs_detail_enrichment as _needs_detail_enrichment,
     with_stay_params as _with_stay_params,
 )
+from agoda_crawler.listing.api_capture import ListingApiCapture
 from agoda_crawler.listing.page_crawl import (
     crawl_current_results_page as _crawl_current_results_page,
     page_scroll_summary as _page_scroll_summary,
@@ -61,8 +62,6 @@ PAGINATION_NAVIGATION_ATTEMPTS = 3
 
 def _navigate_to_results(
     page: Page,
-    start_url: str,
-    use_homepage_flow: bool,
     destination: str,
     check_in: str,
     check_out: str,
@@ -71,16 +70,9 @@ def _navigate_to_results(
     children: int,
 ) -> str:
     """
-    Run the Agoda hotel search using homepage UI only.
-
-    `start_url` and `use_homepage_flow` are kept for CLI/API compatibility, but
-    the crawler no longer loads direct `/search?...` URLs or mutates query
-    params. The navigation module validates the page by hotel card presence.
+    Run the Agoda hotel search and return the listing card selector.
     """
-    if start_url:
-        log("Search: ignoring --start-url because UI flow is required")
-    if not use_homepage_flow:
-        log("Search: using homepage UI flow")
+    log("Search: preparing hotel results")
 
     return search_hotels_via_ui(
         page,
@@ -188,10 +180,8 @@ def _enrich_pending_records(
 
 
 def crawl_agoda_search(
-    start_url: str,
     max_pages: int = 2,
     headless: bool = False,
-    use_homepage_flow: bool = False,
     destination: str = "Vung Tau",
     check_in: str = "2026-06-10",
     check_out: str = "2026-06-11",
@@ -229,9 +219,7 @@ def crawl_agoda_search(
             browser = p.chromium.launch(headless=headless)
             return crawl_agoda_search_with_browser(
                 browser,
-                start_url=start_url,
                 max_pages=max_pages,
-                use_homepage_flow=use_homepage_flow,
                 destination=destination,
                 check_in=check_in,
                 check_out=check_out,
@@ -263,10 +251,8 @@ def crawl_agoda_search(
 
 def crawl_agoda_search_with_browser(
     browser: Browser,
-    start_url: str,
     max_pages: int = 2,
     headless: bool = True,
-    use_homepage_flow: bool = False,
     destination: str = "Vung Tau",
     check_in: str = "2026-06-10",
     check_out: str = "2026-06-11",
@@ -298,12 +284,12 @@ def crawl_agoda_search_with_browser(
         context = browser.new_context(**_browser_context_options(locale))
         apply_resource_blocking(context)
         page: Page = context.new_page()
+        api_capture = ListingApiCapture()
+        api_capture.attach(page)
 
         search_started_at = time.perf_counter()
         card_selector = _navigate_to_results(
             page,
-            start_url,
-            use_homepage_flow,
             destination,
             check_in,
             check_out,
@@ -335,6 +321,7 @@ def crawl_agoda_search_with_browser(
             max_rounds=max_scroll_rounds,
             stable_rounds=stable_rounds,
             scroll_wait_ms=scroll_wait_ms,
+            api_capture=api_capture,
         )
         page_records = page_result.records
         accepted_state = _capture_pagination_state(page, current_page, page_records)
@@ -381,6 +368,7 @@ def crawl_agoda_search_with_browser(
                     card_selector,
                     target_page,
                     scroll_y_after_navigation=scroll_y_after_navigation,
+                    api_capture=api_capture,
                 )
                 probe_evidence = (
                     _pagination_change_evidence(accepted_state, probe_state)
@@ -415,6 +403,7 @@ def crawl_agoda_search_with_browser(
                     max_rounds=max_scroll_rounds,
                     stable_rounds=stable_rounds,
                     scroll_wait_ms=scroll_wait_ms,
+                    api_capture=api_capture,
                 )
                 candidate_records = candidate_result.records
                 candidate_state = _capture_pagination_state(

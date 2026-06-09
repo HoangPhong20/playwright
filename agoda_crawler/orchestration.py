@@ -41,19 +41,18 @@ DEFAULT_DATE_START = "2026-06-01"
 DEFAULT_DATE_END = "2026-06-30"
 DEFAULT_MAX_PAGES = 0
 DEFAULT_WORKERS = 3
-DEFAULT_DETAIL_WORKERS = 2
+DEFAULT_DETAIL_CONCURRENCY = 2
 DEFAULT_DETAIL_TIMEOUT = 30_000
 DEFAULT_FIELD_RETRY_TIMEOUT = 1_500
 DEFAULT_FIELD_RETRY_COUNT = 2
 DEFAULT_MAX_SCROLL_ROUNDS = 80
 DEFAULT_STABLE_ROUNDS = 3
 DEFAULT_SCROLL_WAIT_MS = 1_000
-DEFAULT_DETAIL_FIELDS = "price_value,rating_text,review_count_text"
+DEFAULT_DETAIL_FIELDS = "price_value,rating_text"
 ALLOWED_DETAIL_FIELDS = {
     "price_value",
     "rating_text",
     "review_count_text",
-    "star_rating_text",
     "image_url",
 }
 
@@ -101,10 +100,8 @@ def run_crawl_job_with_browser(
         log("Job started")
         records = crawl_agoda_search_with_browser(
             browser,
-            start_url=args.start_url or "",
             max_pages=max(0, args.max_pages),
             headless=args.headless,
-            use_homepage_flow=args.use_homepage_flow,
             destination=job.destination,
             check_in=job.check_in,
             check_out=job.check_out,
@@ -134,10 +131,15 @@ def run_crawl_job_with_browser(
             job.check_in,
             job.check_out,
         )
-        if args.print_records:
+        if args.print_records and is_publishable_record(annotated):
             print(as_json(project_output_record(annotated)))
         annotated_records.append(annotated)
-    return CrawlJobResult(job=job, records=annotated_records)
+    public_records = [record for record in annotated_records if is_publishable_record(record)]
+    return CrawlJobResult(
+        job=job,
+        records=public_records,
+        debug_records=annotated_records,
+    )
 
 
 def run_crawl_job_batch(
@@ -279,20 +281,24 @@ def run_from_args(args) -> None:
             for result in stay_results
             for record in result.records
         ]
-        write_latest_outputs(stay_records)
-        public_records = [record for record in stay_records if is_publishable_record(record)]
+        debug_records = [
+            record
+            for result in stay_results
+            for record in (result.debug_records or result.records)
+        ]
+        write_latest_outputs(debug_records)
 
         print(f"\nStay {check_in} -> {check_out} complete")
-        if len(public_records) != len(stay_records):
+        if len(debug_records) != len(stay_records):
             print(
-                "Filtered incomplete records: "
-                f"{len(stay_records) - len(public_records)} debug-only, "
-                f"{len(public_records)} publishable"
+                "Output coverage: "
+                f"{len(stay_records)}/{len(debug_records)} publishable, "
+                f"{len(debug_records) - len(stay_records)} debug-only"
             )
-        summarize(public_records)
+        summarize(stay_records)
         elapsed_seconds = int((run_completed_at - run_started_at).total_seconds())
-        print_verification_summary(public_records, elapsed_seconds)
-        if has_missing_price(public_records):
+        print_verification_summary(stay_records, elapsed_seconds)
+        if has_missing_price(stay_records):
             print(
                 "Coverage warning: missing price records present; "
                 "only records with required fields are published."

@@ -6,12 +6,12 @@ from agoda_crawler.extraction import (
     _parse_review_count,
     _canonicalize_price_value,
     _price_value_from_text,
-    _parse_star_rating,
     _record_key,
     _parse_textual_fallback,
 )
 from agoda_crawler.extraction.fields import (
     FIELD_SELECTOR_TIMEOUT,
+    extract_detail_fields,
     extract_from_cards,
     first_text,
 )
@@ -181,15 +181,13 @@ def test_name_from_hotel_url_uses_slug_before_hotel_path() -> None:
     )
 
 
-def test_detail_text_parsers_handle_vietnamese_review_and_stars() -> None:
+def test_detail_text_parsers_handle_vietnamese_review_count() -> None:
     text = "Diem danh gia co so luu tru: 8,3/10 Tuyet voi 1.357 bai danh gia"
-    star = "4 sao tren 5"
 
     parsed = _parse_textual_fallback(text)
 
     assert parsed["rating_text"] == "8.3"
     assert _parse_review_count(text) == "1.357"
-    assert _parse_star_rating(star) == "4 stars"
 
 
 class _FieldLocator:
@@ -278,3 +276,88 @@ def test_extract_from_cards_scrolls_each_card_and_keeps_record_on_scroll_failure
 
     assert card.scroll_timeouts
     assert records[0]["hotel_name"] == "Demo Hotel"
+
+
+class _DetailElement:
+    def __init__(self, text: str = "", attrs: dict[str, str] | None = None) -> None:
+        self.text = text
+        self.attrs = attrs or {}
+
+    @property
+    def first(self):
+        return self
+
+    def count(self) -> int:
+        return 1
+
+    def nth(self, _index: int):
+        return self
+
+    def inner_text(self, timeout: int) -> str:
+        return self.text
+
+    def get_attribute(self, attr: str, timeout: int):
+        return self.attrs.get(attr)
+
+
+class _EmptyDetailLocator:
+    @property
+    def first(self):
+        return self
+
+    def count(self) -> int:
+        return 0
+
+    def nth(self, _index: int):
+        return self
+
+    def inner_text(self, timeout: int) -> str:
+        return ""
+
+    def get_attribute(self, attr: str, timeout: int):
+        return None
+
+
+class _DetailListLocator:
+    def __init__(self, elements: list[_DetailElement]) -> None:
+        self.elements = elements
+
+    @property
+    def first(self):
+        return self.elements[0] if self.elements else _EmptyDetailLocator()
+
+    def count(self) -> int:
+        return len(self.elements)
+
+    def nth(self, index: int):
+        return self.elements[index]
+
+
+class _DetailPage:
+    url = "https://www.agoda.com/demo/hotel/vung-tau-vn.html"
+
+    def __init__(self, script_text: str) -> None:
+        self.script_text = script_text
+
+    def evaluate(self, script: str):
+        if "document.scripts" in script:
+            return [self.script_text]
+        return None
+
+    def locator(self, selector: str):
+        if selector == "script":
+            return _DetailListLocator([_DetailElement(self.script_text)])
+        if selector == "body":
+            return _DetailElement("Demo Hotel Tuyet voi 8,5 voi 120 bai danh gia")
+        if selector == "img":
+            return _DetailListLocator([])
+        return _EmptyDetailLocator()
+
+
+def test_extract_detail_fields_reads_price_from_script_state() -> None:
+    fields = extract_detail_fields(
+        _DetailPage('{"hotelName":"Demo","finalPrice":755000,"currencyCode":"VND"}')
+    )
+
+    assert fields["price_value"] == "755000"
+

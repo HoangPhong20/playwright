@@ -37,14 +37,12 @@ def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
     assert args.date_end == "2026-06-30"
     assert not hasattr(args, "nights")
     assert args.workers == 3
-    assert args.detail_workers == 2
     assert args.detail_concurrency == 2
     assert args.enrich_missing_only is True
     assert args.detail_timeout == 30000
     assert args.field_retry_timeout == 1500
     assert args.field_retry_count == 2
-    assert args.detail_fields == "price_value,rating_text,review_count_text"
-    assert args.complete_mode is True
+    assert args.detail_fields == "price_value,rating_text"
     assert args.max_scroll_rounds == 80
     assert args.stable_rounds == 3
     assert args.scroll_wait_ms == 1000
@@ -111,6 +109,15 @@ def test_parse_detail_fields_rejects_removed_location_field() -> None:
         raise AssertionError("location_text should not be accepted")
 
 
+def test_parse_detail_fields_rejects_removed_star_rating_field() -> None:
+    try:
+        parse_detail_fields("price_value,star_rating_text")
+    except ValueError as exc:
+        assert "star_rating_text" in str(exc)
+    else:
+        raise AssertionError("star_rating_text should not be accepted")
+
+
 def test_parse_args_can_disable_detail_enrichment(monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", ["main.py", "--no-enrich-details"])
 
@@ -138,14 +145,12 @@ def test_parse_args_uses_env_defaults(monkeypatch) -> None:
             "AGODA_OUTPUT_DIR": "data/raw",
             "AGODA_ENRICH_DETAILS": "false",
             "AGODA_WORKERS": "3",
-            "AGODA_DETAIL_WORKERS": "4",
             "AGODA_DETAIL_CONCURRENCY": "3",
             "AGODA_DETAIL_TIMEOUT": "20000",
             "AGODA_FIELD_RETRY_TIMEOUT": "1200",
             "AGODA_FIELD_RETRY_COUNT": "1",
             "AGODA_DETAIL_FIELDS": "price_value,image_url",
             "AGODA_ENRICH_MISSING_ONLY": "false",
-            "AGODA_COMPLETE_MODE": "false",
             "AGODA_MAX_SCROLL_ROUNDS": "40",
             "AGODA_STABLE_ROUNDS": "5",
             "AGODA_SCROLL_WAIT_MS": "1500",
@@ -158,14 +163,12 @@ def test_parse_args_uses_env_defaults(monkeypatch) -> None:
     assert args.output_dir == "data/raw"
     assert args.enrich_details is False
     assert args.workers == 3
-    assert args.detail_workers == 4
     assert args.detail_concurrency == 3
     assert args.detail_timeout == 20000
     assert args.field_retry_timeout == 1200
     assert args.field_retry_count == 1
     assert args.detail_fields == "price_value,image_url"
     assert args.enrich_missing_only is False
-    assert args.complete_mode is False
     assert args.max_scroll_rounds == 40
     assert args.stable_rounds == 5
     assert args.scroll_wait_ms == 1500
@@ -330,6 +333,43 @@ def test_actual_worker_count_caps_requested_workers_to_jobs() -> None:
     assert actual_worker_count(5, 9) == 5
     assert actual_worker_count(0, 3) == 1
     assert actual_worker_count(3, 0) == 0
+
+
+def test_run_crawl_job_keeps_incomplete_records_debug_only(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(sys, "argv", ["main.py"])
+    args = parse_args(env={})
+    job = orchestration.CrawlJob(
+        "Vung Tau",
+        "2026-06-10",
+        "2026-06-11",
+        tmp_path / "out.jsonl",
+    )
+
+    def fake_crawl(*_args, **_kwargs):
+        return [
+            {
+                "hotel_name": "Complete Hotel",
+                "hotel_url": "https://www.agoda.com/complete.html",
+                "price_value": "1000000",
+                "rating_text": "8.5",
+            },
+            {
+                "hotel_name": "Missing Price",
+                "hotel_url": "https://www.agoda.com/missing-price.html",
+                "price_value": None,
+                "rating_text": "8.0",
+            },
+        ]
+
+    monkeypatch.setattr(orchestration, "crawl_agoda_search_with_browser", fake_crawl)
+
+    result = orchestration.run_crawl_job_with_browser(None, job, args)
+
+    assert [record["hotel_name"] for record in result.records] == ["Complete Hotel"]
+    assert [record["hotel_name"] for record in result.debug_records or []] == [
+        "Complete Hotel",
+        "Missing Price",
+    ]
 
 
 def test_estimated_detail_pressure_uses_actual_workers_and_detail_concurrency() -> None:

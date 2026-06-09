@@ -33,6 +33,7 @@ from agoda_crawler.config import (
     CARDS_POLL_INTERVAL,
     CARDS_TIMEOUT,
     CARDS_TIMEOUT_RETRY,
+    CITY_IDS,
     CLICK_DEFAULT,
     CLICK_NEXT_PAGE,
     CLICK_SHORT,
@@ -113,6 +114,17 @@ def search_hotels_via_ui(
     for attempt in range(1, attempts + 1):
         try:
             log(f"Search: preparing results ({attempt}/{attempts})")
+            direct_result = _run_configured_city_id_search(
+                page,
+                destination,
+                check_in,
+                check_out,
+                adults=adults,
+                rooms=rooms,
+                children=children,
+            )
+            if direct_result:
+                return direct_result
             return _run_city_landing_url_search(
                 page,
                 destination,
@@ -127,6 +139,42 @@ def search_hotels_via_ui(
             log(f"Search failed: {str(exc).splitlines()[0]}")
 
     raise RuntimeError("Not hotel results page") from last_error
+
+
+def _run_configured_city_id_search(
+    page: Page,
+    destination: str,
+    check_in: str,
+    check_out: str,
+    adults: int = 2,
+    rooms: int = 1,
+    children: int = 0,
+) -> Optional[str]:
+    city_id = _configured_city_id(destination)
+    if not city_id:
+        return None
+
+    search_url = f"https://www.agoda.com/vi-vn/search?city={city_id}"
+    try:
+        log(f"Search: using configured city id {city_id}")
+        return _open_search_url_candidates(
+            page,
+            search_url,
+            destination,
+            check_in,
+            check_out,
+            adults=adults,
+            rooms=rooms,
+            children=children,
+        )
+    except Exception as exc:
+        log(f"Search: configured city id failed ({str(exc).splitlines()[0]}); trying city landing fallback")
+        return None
+
+
+def _configured_city_id(destination: str) -> Optional[str]:
+    normalized_destination = normalize_agoda_destination(destination).casefold()
+    return CITY_IDS.get(normalized_destination)
 
 
 def verify_hotel_results_page(page: Page, timeout_ms: int = CARDS_TIMEOUT) -> str:
@@ -581,24 +629,46 @@ def _open_ui_derived_city_search_url(
     rooms: int = 1,
     children: int = 0,
 ) -> str:
+    search_url = _find_city_search_url(page)
+    if search_url is None:
+        raise RuntimeError("Cannot derive hotel search URL from city landing page")
+
+    return _open_search_url_candidates(
+        page,
+        search_url,
+        destination,
+        check_in,
+        check_out,
+        adults=adults,
+        rooms=rooms,
+        children=children,
+    )
+
+
+def _open_search_url_candidates(
+    page: Page,
+    search_url: str,
+    destination: str,
+    check_in: str,
+    check_out: str,
+    adults: int = 2,
+    rooms: int = 1,
+    children: int = 0,
+) -> str:
     check_in_date = _parse_iso_date(check_in, "check-in")
     check_out_date = _parse_iso_date(check_out, "check-out")
     if check_out_date <= check_in_date:
         raise ValueError("check_out must be after check_in")
 
-    search_url = _find_city_search_url(page)
-    if search_url is None:
-        raise RuntimeError("Cannot derive hotel search URL from city landing page")
-
     candidates = _build_city_search_urls(
         search_url,
-            destination=destination,
-            check_in_date=check_in_date,
-            check_out_date=check_out_date,
-            adults=adults,
-            rooms=rooms,
-            children=children,
-        )
+        destination=destination,
+        check_in_date=check_in_date,
+        check_out_date=check_out_date,
+        adults=adults,
+        rooms=rooms,
+        children=children,
+    )
     last_error: Optional[Exception] = None
     for idx, target_url in enumerate(candidates, start=1):
         try:

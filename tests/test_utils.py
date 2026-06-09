@@ -67,13 +67,16 @@ def test_publish_requires_price_and_rating_but_not_review() -> None:
     missing_price = _publishable_record(price_value=None)
     missing_rating = _publishable_record(rating_text=None)
     missing_review = _publishable_record(review_count_text=None)
-    complete = _publishable_record()
+    missing_image = _publishable_record(image_url=None)
+    complete = _publishable_record(image_url="https://images.example/demo.jpg")
 
     assert is_publishable_record(missing_price) is False
     assert is_publishable_record(missing_rating) is False
     assert is_publishable_record(missing_review) is True
+    assert is_publishable_record(missing_image) is True
     assert is_incremental_publishable_record(missing_price) is False
     assert is_incremental_publishable_record(missing_review) is False
+    assert is_incremental_publishable_record(missing_image) is False
     assert is_incremental_publishable_record(complete) is True
 
 
@@ -94,7 +97,6 @@ def _publishable_record(**overrides):
         "price_value": "1000000",
         "rating_text": "8.5",
         "review_count_text": "120",
-        "star_rating_text": "4 stars",
         "image_url": None,
         "crawled_at": "2026-06-03T00:00:00",
         "destination": "Vung Tau",
@@ -112,7 +114,6 @@ def test_project_output_record_removes_debug_fields() -> None:
         "price_value": "1000000",
         "rating_text": "8.5",
         "review_count_text": "120",
-        "star_rating_text": "4 stars",
         "location_text": "legacy value",
         "image_url": "https://images.example/demo.jpg",
         "crawled_at": "2026-06-03T00:00:00",
@@ -134,7 +135,6 @@ def test_project_output_record_removes_debug_fields() -> None:
         "price_value",
         "rating_text",
         "review_count_text",
-        "star_rating_text",
         "image_url",
         "crawled_at",
         "destination",
@@ -156,6 +156,8 @@ def test_verification_summary_labels_unlimited_pages_as_all(capsys) -> None:
             "hotel_url": "https://www.agoda.com/demo/hotel/demo.html",
             "price_value": "1000000",
             "rating_text": "8.5",
+            "review_count_text": "120",
+            "image_url": "https://images.example/demo.jpg",
             "_pagination": {
                 "pages_requested": 0,
                 "pages_collected": 2,
@@ -168,3 +170,5 @@ def test_verification_summary_labels_unlimited_pages_as_all(capsys) -> None:
 
     captured = capsys.readouterr()
     assert "- pages=2/all duplicate=1" in captured.out
+    assert "VERIFY_MISSING_NAME=0" in captured.out
+    assert "VERIFY_OPTIONAL_MIN_COVERAGE=100.0" in captured.out

@@ -123,6 +123,44 @@ def test_force_hotel_mode_continue_reraises_other_errors(monkeypatch) -> None:
         raise AssertionError("Expected non-tab hotel mode errors to propagate")
 
 
+def test_configured_city_id_search_opens_direct_search_url(monkeypatch) -> None:
+    opened = {}
+
+    def open_candidates(_page, search_url, destination, check_in, check_out, **kwargs):
+        opened["search_url"] = search_url
+        opened["destination"] = destination
+        opened["check_in"] = check_in
+        opened["check_out"] = check_out
+        return '[data-selenium="hotel-item"]'
+
+    monkeypatch.setattr(navigation_search, "CITY_IDS", {"da nang": "16440"})
+    monkeypatch.setattr(navigation_search, "_open_search_url_candidates", open_candidates)
+
+    selector = navigation_search._run_configured_city_id_search(
+        object(),
+        "Da Nang",
+        "2026-06-10",
+        "2026-06-11",
+    )
+
+    assert selector == '[data-selenium="hotel-item"]'
+    assert opened["search_url"] == "https://www.agoda.com/vi-vn/search?city=16440"
+    assert opened["destination"] == "Da Nang"
+    assert opened["check_in"] == "2026-06-10"
+    assert opened["check_out"] == "2026-06-11"
+
+
+def test_configured_city_id_search_skips_unknown_destination(monkeypatch) -> None:
+    monkeypatch.setattr(navigation_search, "CITY_IDS", {})
+
+    assert navigation_search._run_configured_city_id_search(
+        object(),
+        "Hue",
+        "2026-06-10",
+        "2026-06-11",
+    ) is None
+
+
 class _ResultsWaitLocator:
     def __init__(self, count: int) -> None:
         self._count = count

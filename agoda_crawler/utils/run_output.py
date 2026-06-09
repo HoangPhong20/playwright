@@ -15,9 +15,18 @@ FIELDS_TO_CHECK = [
     "price_value",
     "rating_text",
     "review_count_text",
-    "star_rating_text",
     "image_url",
 ]
+CRITICAL_COVERAGE_FIELDS = (
+    "hotel_name",
+    "price_value",
+    "rating_text",
+)
+OPTIONAL_COVERAGE_FIELDS = (
+    "review_count_text",
+    "image_url",
+)
+OPTIONAL_COVERAGE_TARGET = 90.0
 
 OUTPUT_RECORD_FIELDS = (
     "hotel_name",
@@ -25,7 +34,6 @@ OUTPUT_RECORD_FIELDS = (
     "price_value",
     "rating_text",
     "review_count_text",
-    "star_rating_text",
     "image_url",
     "crawled_at",
     "destination",
@@ -54,7 +62,7 @@ def is_incremental_publishable_record(record: Dict) -> bool:
     """Return True when an early listing record is complete enough to append."""
     if not is_publishable_record(record):
         return False
-    return bool(record.get("review_count_text"))
+    return all(record.get(field) for field in OPTIONAL_COVERAGE_FIELDS)
 
 
 def summarize(records: List[Dict]) -> None:
@@ -78,15 +86,24 @@ def summarize(records: List[Dict]) -> None:
         present_pct = present * 100.0 / total
         print(f"- {field}: {present}/{total} ({present_pct:.1f}%), missing={miss}")
 
-    likely_detail_page_fields = [
-        field for field in FIELDS_TO_CHECK if (missing[field] / total) >= 0.5
+    critical_missing_fields = [
+        field for field in CRITICAL_COVERAGE_FIELDS if missing[field] > 0
     ]
-    if likely_detail_page_fields:
-        print("Low optional/detail coverage:")
-        for field in likely_detail_page_fields:
-            print(f"- {field}")
+    optional_below_target = [
+        field
+        for field in OPTIONAL_COVERAGE_FIELDS
+        if (total - missing[field]) * 100.0 / total < OPTIONAL_COVERAGE_TARGET
+    ]
+
+    print("Coverage goals:")
+    if critical_missing_fields:
+        print(f"- critical 100%: failed ({', '.join(critical_missing_fields)})")
     else:
-        print("Listing coverage is sufficient for most fields.")
+        print("- critical 100%: ok")
+    if optional_below_target:
+        print(f"- optional >= {OPTIONAL_COVERAGE_TARGET:.0f}%: below target ({', '.join(optional_below_target)})")
+    else:
+        print(f"- optional >= {OPTIONAL_COVERAGE_TARGET:.0f}%: ok")
 
 
 def print_verification_summary(records: List[Dict], elapsed_seconds: int) -> None:
@@ -95,6 +112,7 @@ def print_verification_summary(records: List[Dict], elapsed_seconds: int) -> Non
     detail_failed = sum(1 for rec in records if rec.get("enrich_status") == "failed")
     scroll_rounds = max((rec.get("_listing_scroll_round") or 0 for rec in records), default=0)
     missing_url = sum(1 for rec in records if not rec.get("hotel_url"))
+    missing_name = sum(1 for rec in records if not rec.get("hotel_name"))
     missing_price = sum(1 for rec in records if not rec.get("price_value"))
     missing_rating = sum(1 for rec in records if not rec.get("rating_text"))
     records_with_url = sum(1 for rec in records if rec.get("hotel_url"))
@@ -116,7 +134,17 @@ def print_verification_summary(records: List[Dict], elapsed_seconds: int) -> Non
     pages_requested = pagination.get("pages_requested", 0)
     pages_requested_label = pages_requested if pages_requested else "all"
     price_present = sum(1 for rec in records if rec.get("price_value"))
-    coverage_status = "failed" if missing_price else "success"
+    optional_coverages = [
+        (sum(1 for rec in records if rec.get(field)) * 100.0 / len(records))
+        for field in OPTIONAL_COVERAGE_FIELDS
+    ] if records else []
+    optional_min_coverage = min(optional_coverages) if optional_coverages else 0.0
+    critical_failed = any(
+        not rec.get(field)
+        for rec in records
+        for field in CRITICAL_COVERAGE_FIELDS
+    )
+    coverage_status = "failed" if critical_failed else "success"
 
     print("Verify:")
     print(f"- seconds={elapsed_seconds}")
@@ -157,9 +185,12 @@ def print_verification_summary(records: List[Dict], elapsed_seconds: int) -> Non
     print(f"VERIFY_RECORDS_TOTAL={len(records)}")
     print(f"VERIFY_RECORDS_WITH_URL={records_with_url}")
     print(f"VERIFY_RECORDS_MISSING_URL={missing_url}")
+    print(f"VERIFY_MISSING_NAME={missing_name}")
     print(f"VERIFY_PRICE_PRESENT={price_present}")
     print(f"VERIFY_MISSING_PRICE={missing_price}")
     print(f"VERIFY_MISSING_RATING={missing_rating}")
+    print(f"VERIFY_OPTIONAL_MIN_COVERAGE={optional_min_coverage:.1f}")
+    print(f"VERIFY_OPTIONAL_TARGET={OPTIONAL_COVERAGE_TARGET:.1f}")
     print(f"VERIFY_DETAIL_ATTEMPTED={detail_attempted}")
     print(f"VERIFY_DETAIL_SUCCESS={detail_success}")
     print(f"VERIFY_DETAIL_FAILED={detail_failed}")

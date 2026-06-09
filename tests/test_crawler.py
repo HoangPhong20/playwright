@@ -27,6 +27,9 @@ def test_with_stay_params_adds_dates_and_occupancy() -> None:
     assert "rooms=1" in url
     assert "adults=2" in url
     assert "children=0" in url
+    assert "finalPriceView=1" in url
+    assert "currencyCode=VND" in url
+    assert "travellerType=1" in url
 
 
 def test_with_stay_params_keeps_custom_occupancy() -> None:
@@ -91,7 +94,6 @@ def test_needs_detail_enrichment_skips_when_only_non_price_field_missing() -> No
         "price_value": "1000",
         "rating_text": "8.7",
         "review_count_text": "100 reviews",
-        "star_rating_text": "4 stars",
         "image_url": None,
     }
 
@@ -104,7 +106,6 @@ def test_needs_detail_enrichment_uses_rating_as_required_default() -> None:
         "price_value": "1000",
         "rating_text": None,
         "review_count_text": "22",
-        "star_rating_text": None,
         "image_url": None,
     }
 
@@ -118,7 +119,6 @@ def test_needs_detail_enrichment_when_price_missing() -> None:
         "price_value": None,
         "rating_text": "8.7",
         "review_count_text": "100 reviews",
-        "star_rating_text": "4 stars",
         "image_url": None,
     }
 
@@ -132,7 +132,6 @@ def test_needs_detail_enrichment_when_configured_image_missing() -> None:
         "price_value": "1000",
         "rating_text": "8.7",
         "review_count_text": "100 reviews",
-        "star_rating_text": "4 stars",
         "image_url": None,
     }
 

@@ -91,8 +91,6 @@ AGODA_FIELD_RETRY_COUNT=2
 
 AGODA_MAX_SCROLL_ROUNDS=50
 AGODA_SCROLL_WAIT_MS=600
-AGODA_SCROLL_PAUSE=600
-AGODA_PAGE_SCROLL_ROUNDS=40
 AGODA_LISTING_FULL_SNAPSHOT_INTERVAL=5
 
 AGODA_WAIT_AFTER_SEARCH=1000
@@ -109,11 +107,7 @@ Nếu máy hoặc network yếu, hạ detail concurrency trước:
 ```text
 AGODA_DETAIL_CONCURRENCY=2
 AGODA_SCROLL_WAIT_MS=800
-AGODA_SCROLL_PAUSE=800
 ```
-
-`AGODA_DETAIL_WORKERS` là alias cũ; cấu hình đang điều khiển thực tế là
-`AGODA_DETAIL_CONCURRENCY` hoặc `--detail-concurrency`.
 
 Crawler thu listing record ngay trong từng vòng scroll, nên scroll tới đâu thì
 dữ liệu trong page crawl được merge tới đó. JSONL publishable được append ngay

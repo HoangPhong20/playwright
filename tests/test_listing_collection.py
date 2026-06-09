@@ -280,6 +280,43 @@ def test_collect_listing_snapshot_merges_partial_with_url_by_property_id() -> No
     assert snapshot.records[0]["record_kind"] == "full_record"
 
 
+class _DuplicateLazyFieldPage:
+    url = "https://www.agoda.com/vi-vn/search?city=17190"
+
+    def evaluate(self, script: str, *args):
+        if "scrollY" in script:
+            return 0
+        if "document.documentElement" in script:
+            return []
+        return [
+            {
+                "urls": ["/vi-vn/lazy-field-hotel/hotel/vung-tau-vn.html?cid=1"],
+                "anchorHrefs": ["/vi-vn/lazy-field-hotel/hotel/vung-tau-vn.html?cid=1"],
+                "name": "Lazy Field Hotel",
+                "text": "Lazy Field Hotel",
+                "imageUrl": "",
+                "propertyId": "789",
+                "sourceSelector": '[data-selenium="hotel-item"]',
+            },
+            {
+                "urls": ["/vi-vn/lazy-field-hotel/hotel/vung-tau-vn.html?cid=2"],
+                "anchorHrefs": ["/vi-vn/lazy-field-hotel/hotel/vung-tau-vn.html?cid=2"],
+                "name": "Lazy Field Hotel",
+                "text": "Lazy Field Hotel 4 stars out of 5",
+                "imageUrl": "https://pix6.agoda.net/hotelImages/789/789.jpg",
+                "propertyId": "789",
+                "sourceSelector": '[data-selenium="hotel-item"]',
+            },
+        ]
+
+
+def test_collect_listing_snapshot_merges_fields_from_duplicate_lazy_card() -> None:
+    snapshot = collect_listing_snapshot(_DuplicateLazyFieldPage(), '[data-selenium="hotel-item"]', 1)
+
+    assert len(snapshot.records) == 1
+    assert snapshot.records[0]["image_url"] == "https://pix6.agoda.net/hotelImages/789/789.jpg"
+
+
 def test_property_url_map_from_html_reads_escaped_url_near_property_id() -> None:
     html = (
         '<script>{"propertyId":"123",'
@@ -338,6 +375,74 @@ def test_collect_listing_snapshot_resolves_missing_url_from_property_url_map() -
     assert snapshot.metrics.cards_with_url_after_resolve == 1
     assert snapshot.metrics.property_url_map_count == 1
     assert snapshot.metrics.property_url_resolved_count == 1
+
+
+class _ApiUrlMapPage:
+    url = "https://www.agoda.com/vi-vn/search?city=17190"
+
+    def evaluate(self, script: str, *args):
+        if "scrollY" in script:
+            return 0
+        if "document.documentElement" in script:
+            return []
+        return [
+            {
+                "urls": [],
+                "anchorHrefs": [],
+                "name": "",
+                "text": "Mo API Hotel trong the moi",
+                "imageUrl": "",
+                "propertyId": "456",
+                "dataSelenium": "hotel-item",
+                "sourceSelector": '[data-selenium="hotel-item"]',
+            }
+        ]
+
+
+def test_collect_listing_snapshot_resolves_missing_url_and_fields_from_api_map() -> None:
+    snapshot = collect_listing_snapshot(
+        _ApiUrlMapPage(),
+        '[data-selenium="hotel-item"]',
+        1,
+        api_property_map={
+            "456": {
+                "hotel_url": "/vi-vn/api-hotel/hotel/da-nang-vn.html?cid=1",
+                "hotel_name": "API Hotel",
+                "price_value": "1200000",
+                "rating_text": "8.7",
+                "review_count_text": "321",
+                "image_url": "//pix6.agoda.net/hotelImages/456/456.jpg",
+                "source": "api_response:https://www.agoda.com/api/search",
+            }
+        },
+        api_metrics={
+            "api_response_count": 3,
+            "api_json_response_count": 1,
+            "api_property_count": 1,
+            "api_url_count": 1,
+        },
+    )
+
+    assert len(snapshot.records) == 1
+    record = snapshot.records[0]
+    assert record["hotel_name"] == "API Hotel"
+    assert record["hotel_url"] == "https://www.agoda.com/vi-vn/api-hotel/hotel/da-nang-vn.html"
+    assert record["price_value"] == "1200000"
+    assert record["rating_text"] == "8.7"
+    assert record["review_count_text"] == "321"
+    assert record["image_url"] == "https://pix6.agoda.net/hotelImages/456/456.jpg"
+    assert record["url_resolution_source"] == "api_response:https://www.agoda.com/api/search"
+    assert record["api_merged_fields"] == [
+        "price_value",
+        "rating_text",
+        "review_count_text",
+        "image_url",
+    ]
+    assert snapshot.metrics.api_response_count == 3
+    assert snapshot.metrics.api_json_response_count == 1
+    assert snapshot.metrics.api_property_count == 1
+    assert snapshot.metrics.api_url_count == 1
+    assert snapshot.metrics.api_url_resolved_count == 1
 
 
 class _ImageSlidePage:

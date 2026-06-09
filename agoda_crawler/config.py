@@ -9,12 +9,11 @@ DEFAULT_LOCALE = "vi-vn"
 ENV_PATH = ".env"
 
 CONFIG_ENV_KEYS = {
-    "AGODA_START_URL",
     "AGODA_MAX_PAGES",
     "AGODA_HEADLESS",
-    "AGODA_USE_HOMEPAGE_FLOW",
     "AGODA_DESTINATION",
     "AGODA_DESTINATIONS",
+    "AGODA_CITY_IDS",
     "AGODA_CHECK_IN",
     "AGODA_CHECK_OUT",
     "AGODA_DATE_START",
@@ -27,7 +26,6 @@ CONFIG_ENV_KEYS = {
     "AGODA_ENRICH_DETAILS",
     "AGODA_MAX_DETAIL_PAGES",
     "AGODA_WORKERS",
-    "AGODA_DETAIL_WORKERS",
     "AGODA_DETAIL_CONCURRENCY",
     "AGODA_DETAIL_TIMEOUT",
     "AGODA_DETAIL_FIELDS",
@@ -35,7 +33,6 @@ CONFIG_ENV_KEYS = {
     "AGODA_FIELD_RETRY_COUNT",
     "AGODA_DETAIL_PROGRESS_INTERVAL",
     "AGODA_ENRICH_MISSING_ONLY",
-    "AGODA_COMPLETE_MODE",
     "AGODA_MAX_SCROLL_ROUNDS",
     "AGODA_STABLE_ROUNDS",
     "AGODA_SCROLL_WAIT_MS",
@@ -136,6 +133,19 @@ def env_csv(env: Dict[str, str], key: str, default: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in value.split(",") if part.strip())
 
 
+def env_mapping(env: Dict[str, str], key: str, default: str) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    for item in env_csv(env, key, default):
+        name, separator, value = item.partition(":")
+        if not separator:
+            continue
+        normalized_name = " ".join(name.split()).casefold()
+        normalized_value = value.strip()
+        if normalized_name and normalized_value:
+            result[normalized_name] = normalized_value
+    return result
+
+
 _ENV = load_config_env()
 
 CLICK_SHORT = env_int(_ENV, "AGODA_CLICK_SHORT", 1_200)
@@ -186,4 +196,9 @@ BLOCK_URL_KEYWORDS = env_csv(
     _ENV,
     "AGODA_BLOCK_URL_KEYWORDS",
     "googletagmanager,google-analytics,doubleclick,facebook,hotjar,clarity,taboola",
+)
+CITY_IDS = env_mapping(
+    _ENV,
+    "AGODA_CITY_IDS",
+    "Vung Tau:17190,Da Nang:16440,Nha Trang:2679,Ho Chi Minh:13170,Ho Chi Minh City:13170,Ha Long:17182",
 )

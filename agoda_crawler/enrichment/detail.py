@@ -25,7 +25,6 @@ DETAIL_ENRICH_FIELDS = (
     "price_value",
     "rating_text",
     "review_count_text",
-    "star_rating_text",
     "image_url",
 )
 DEFAULT_DETAIL_ENRICH_FIELDS = ("price_value", "rating_text", "review_count_text")
@@ -480,14 +479,28 @@ def with_stay_params(
 ) -> str:
     split = urlsplit(hotel_url)
     query = dict(parse_qsl(split.query, keep_blank_values=True))
+    cid = query.get("cid", "-1")
+    currency = query.get("currencyCode", "VND")
     query.update(
         {
+            "cid": cid,
             "checkIn": check_in,
             "checkOut": check_out,
             "los": los_from_dates(check_in, check_out),
             "rooms": str(rooms),
             "adults": str(adults),
             "children": str(children),
+            "finalPriceView": "1",
+            "isShowMobileAppPrice": "false",
+            "familyMode": "false",
+            "maxRooms": "0",
+            "childAges": "",
+            "numberOfGuest": "0",
+            "missingChildAges": "false",
+            "travellerType": "1",
+            "showReviewSubmissionEntry": "false",
+            "currencyCode": currency,
+            "isFreeOccSearch": "false",
         }
     )
     return urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), ""))

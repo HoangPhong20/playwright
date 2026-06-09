@@ -66,18 +66,6 @@ def parse_review_count(text: str) -> Optional[str]:
     return match.group(1).strip() if match else None
 
 
-def parse_star_rating(text: str) -> Optional[str]:
-    normalized_text = ascii_text(text)
-    match = re.search(
-        r"\b(\d(?:[.,]\d)?)\s*(?:sao|stars?)\s*(?:tren|out\s+of)\s*5\b",
-        normalized_text,
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return None
-    return f"{match.group(1).replace(',', '.')} stars"
-
-
 def price_value_from_text(text: str) -> Optional[str]:
     candidate = extract_price_candidate(text)
     return canonicalize_price_value(candidate) if candidate else None
@@ -200,20 +188,17 @@ def parse_textual_fallback(raw_text: Optional[str]) -> Dict[str, Optional[str]]:
             "price_value": None,
             "rating_text": None,
             "review_count_text": None,
-            "star_rating_text": None,
         }
 
     text = compact_text(raw_text) or ""
 
     rating_text = parse_review_score(text)
-    star_match = re.search(r"\b(\d(?:\.\d)?)\s+stars?\s+out\s+of\s+5\b", text, flags=re.IGNORECASE)
     price_value = price_value_from_text(text)
 
     return {
         "price_value": price_value,
         "rating_text": rating_text,
         "review_count_text": parse_review_count(text),
-        "star_rating_text": (star_match.group(1) + " stars") if star_match else parse_star_rating(text),
     }
 
 

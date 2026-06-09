@@ -57,13 +57,6 @@ FIELD_SELECTORS = {
         '[data-testid="review-count"]',
         'span:has-text("reviews")',
     ],
-    "star_rating_text": [
-        '[data-selenium="hotel-star-rating"]',
-        '[data-testid="star-rating"]',
-        '[aria-label*="star rating" i]',
-        '[class*="StarRating"]',
-        '[aria-label*="star"]',
-    ],
     "image_url": [
         "img",
         "[data-testid='property-card-image'] img",

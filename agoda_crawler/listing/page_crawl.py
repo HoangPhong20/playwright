@@ -1,7 +1,7 @@
 """Crawl and collect records from the current Agoda listing page."""
 import time
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 from playwright.sync_api import Page
 
@@ -74,6 +74,7 @@ def crawl_current_results_page(
     max_rounds: int = PAGE_SCROLL_ROUNDS,
     stable_rounds: int = PAGE_STABLE_ROUNDS,
     scroll_wait_ms: int = SCROLL_PAUSE,
+    api_capture: Optional[Any] = None,
 ) -> PageCrawlResult:
     page_started_at = time.perf_counter()
     records_by_key: Dict[str, Dict] = {}
@@ -98,6 +99,7 @@ def crawl_current_results_page(
             records_by_key,
             round_number,
             full_snapshot=should_collect_full_listing_snapshot(round_number),
+            api_capture=api_capture,
         )
         snapshot = merge_result.snapshot
         last_metrics = snapshot.metrics
@@ -121,6 +123,7 @@ def crawl_current_results_page(
             before_url_count=wait_before_url_count,
             before_dom_count=wait_before_dom_count,
             timeout_ms=scroll_wait_ms,
+            api_capture=api_capture,
         )
         after_snapshot = wait_result.snapshot
         after_metrics = after_snapshot.metrics
@@ -184,6 +187,7 @@ def crawl_current_results_page(
         records_by_key,
         completed_rounds,
         full_snapshot=True,
+        api_capture=api_capture,
     )
     last_metrics = final_merge_result.snapshot.metrics
 
@@ -239,6 +243,7 @@ def collect_and_merge_listing_snapshot(
     records_by_key: Dict[str, Dict],
     round_number: int,
     full_snapshot: bool = True,
+    api_capture: Optional[Any] = None,
 ) -> ListingMergeResult:
     """Collect the current DOM state immediately and keep any records found."""
     snapshot = collect_listing_snapshot(
@@ -247,6 +252,8 @@ def collect_and_merge_listing_snapshot(
         page_number,
         include_embedded=full_snapshot,
         include_broad_selectors=full_snapshot,
+        api_property_map=_api_property_map(api_capture),
+        api_metrics=_api_metrics(api_capture),
     )
     updated_existing = merge_listing_snapshot(
         records_by_key,
@@ -310,13 +317,15 @@ def wait_for_listing_growth(
     before_url_count: int,
     before_dom_count: int,
     timeout_ms: int,
+    api_capture: Optional[Any] = None,
 ) -> ListingWaitResult:
     started_at = time.perf_counter()
     deadline = started_at + max(0, timeout_ms) / 1000.0
     last_snapshot = None
     updated_existing = False
     grew = False
-    waited_for_lazy = False
+    if timeout_ms > 0:
+        wait_for_lazy_results(page)
 
     while True:
         merge_result = collect_and_merge_listing_snapshot(
@@ -326,6 +335,7 @@ def wait_for_listing_growth(
             records_by_key,
             round_number,
             full_snapshot=False,
+            api_capture=api_capture,
         )
         snapshot = merge_result.snapshot
         last_snapshot = snapshot
@@ -345,11 +355,7 @@ def wait_for_listing_growth(
         remaining_ms = int((deadline - time.perf_counter()) * 1000)
         if remaining_ms <= 0:
             break
-        if not waited_for_lazy:
-            wait_for_lazy_results(page)
-            waited_for_lazy = True
-        else:
-            page.wait_for_timeout(min(150, remaining_ms))
+        page.wait_for_timeout(min(150, remaining_ms))
 
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     return ListingWaitResult(
@@ -377,6 +383,11 @@ def attach_listing_metrics(
     record["_listing_cards_with_url_after_resolve"] = metrics.cards_with_url_after_resolve
     record["_listing_property_url_map_count"] = metrics.property_url_map_count
     record["_listing_property_url_resolved_count"] = metrics.property_url_resolved_count
+    record["_listing_api_response_count"] = metrics.api_response_count
+    record["_listing_api_json_response_count"] = metrics.api_json_response_count
+    record["_listing_api_property_count"] = metrics.api_property_count
+    record["_listing_api_url_count"] = metrics.api_url_count
+    record["_listing_api_url_resolved_count"] = metrics.api_url_resolved_count
     record["_listing_duplicate_url_count"] = metrics.duplicate_url_count
     record["_listing_unique_url_count"] = metrics.unique_canonical_url_count
     record["_listing_unique_record_count"] = metrics.unique_hotel_count
@@ -386,11 +397,30 @@ def attach_listing_metrics(
     record["_listing_cards_without_name_count"] = metrics.cards_without_name_count
 
 
+def _api_property_map(api_capture: Optional[Any]) -> Dict[str, Dict[str, str]]:
+    if api_capture is None:
+        return {}
+    try:
+        return api_capture.property_map()
+    except Exception:
+        return {}
+
+
+def _api_metrics(api_capture: Optional[Any]) -> Dict[str, int]:
+    if api_capture is None:
+        return {}
+    try:
+        return api_capture.metrics()
+    except Exception:
+        return {}
+
+
 def probe_current_page_state(
     page: Page,
     card_selector: str,
     page_number: int,
     scroll_y_after_navigation: int,
+    api_capture: Optional[Any] = None,
 ) -> PaginationState:
     records_by_key: Dict[str, Dict] = {}
     handle_cookie_popup(page)
@@ -401,6 +431,7 @@ def probe_current_page_state(
         page_number,
         records_by_key,
         0,
+        api_capture=api_capture,
     )
 
     scroll_advance = advance_results_scroll(page)
@@ -413,6 +444,7 @@ def probe_current_page_state(
             page_number,
             records_by_key,
             0,
+            api_capture=api_capture,
         )
 
     return capture_pagination_state(

@@ -8,9 +8,9 @@ from agoda_crawler.orchestration import (
     DEFAULT_DATE_START,
     DEFAULT_DESTINATION,
     DEFAULT_DESTINATIONS,
+    DEFAULT_DETAIL_CONCURRENCY,
     DEFAULT_DETAIL_FIELDS,
     DEFAULT_DETAIL_TIMEOUT,
-    DEFAULT_DETAIL_WORKERS,
     DEFAULT_FIELD_RETRY_COUNT,
     DEFAULT_FIELD_RETRY_TIMEOUT,
     DEFAULT_MAX_PAGES,
@@ -36,7 +36,6 @@ from agoda_crawler.orchestration import (
 def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
     config = load_config_env() if env is None else env
     parser = argparse.ArgumentParser(description="Agoda search POC crawler (Playwright sync API)")
-    parser.add_argument("--start-url", default=config.get("AGODA_START_URL"), help="Deprecated; ignored because search is UI-only")
     parser.add_argument(
         "--max-pages",
         type=int,
@@ -48,12 +47,6 @@ def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=env_bool(config, "AGODA_HEADLESS", False),
         help="Run browser in headless mode",
-    )
-    parser.add_argument(
-        "--use-homepage-flow",
-        action=argparse.BooleanOptionalAction,
-        default=env_bool(config, "AGODA_USE_HOMEPAGE_FLOW", False),
-        help="Start from Agoda homepage and search like user",
     )
     parser.add_argument("--destination", default=config.get("AGODA_DESTINATION", DEFAULT_DESTINATION), help="Destination text (e.g. Vung Tau)")
     parser.add_argument(
@@ -112,12 +105,6 @@ def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
         help="Comma-separated fields that should trigger detail enrichment when missing",
     )
     parser.add_argument(
-        "--complete-mode",
-        action=argparse.BooleanOptionalAction,
-        default=env_bool(config, "AGODA_COMPLETE_MODE", True),
-        help="Favor listing completeness over speed when scrolling result pages",
-    )
-    parser.add_argument(
         "--max-scroll-rounds",
         type=int,
         default=env_int(config, "AGODA_MAX_SCROLL_ROUNDS", DEFAULT_MAX_SCROLL_ROUNDS),
@@ -142,16 +129,10 @@ def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
         help="Parallel crawl workers; each worker reuses one browser",
     )
     parser.add_argument(
-        "--detail-workers",
-        type=int,
-        default=env_int(config, "AGODA_DETAIL_WORKERS", DEFAULT_DETAIL_WORKERS),
-        help="Legacy alias for parallel detail pages; --detail-concurrency takes precedence",
-    )
-    parser.add_argument(
         "--detail-concurrency",
         type=int,
-        default=env_int(config, "AGODA_DETAIL_CONCURRENCY", env_int(config, "AGODA_DETAIL_WORKERS", DEFAULT_DETAIL_WORKERS)),
-        help="Alias for parallel detail pages per crawl job",
+        default=env_int(config, "AGODA_DETAIL_CONCURRENCY", DEFAULT_DETAIL_CONCURRENCY),
+        help="Parallel detail pages per crawl job",
     )
     parser.add_argument(
         "--print-records",

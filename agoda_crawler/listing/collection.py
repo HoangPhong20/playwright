@@ -58,6 +58,11 @@ class ListingCollectionMetrics:
     cards_with_url_after_resolve: int = 0
     property_url_map_count: int = 0
     property_url_resolved_count: int = 0
+    api_response_count: int = 0
+    api_json_response_count: int = 0
+    api_property_count: int = 0
+    api_url_count: int = 0
+    api_url_resolved_count: int = 0
     unique_canonical_url_count: int = 0
     duplicate_url_count: int = 0
     unique_hotel_count: int = 0
@@ -113,6 +118,8 @@ def collect_listing_snapshot(
     page_number: int,
     include_embedded: bool = True,
     include_broad_selectors: bool = True,
+    api_property_map: Optional[Dict[str, Dict[str, str]]] = None,
+    api_metrics: Optional[Dict[str, int]] = None,
 ) -> ListingCollectionSnapshot:
     """Collect hotel identity candidates quickly from the current listing DOM."""
     raw_cards = _evaluate_listing_dom(
@@ -137,10 +144,18 @@ def collect_listing_snapshot(
         for raw_card in candidate_cards
         if (property_id := _property_id(raw_card))
     ]
-    property_url_map = _evaluate_property_url_map(page, property_ids)
+    html_property_url_map = _evaluate_property_url_map(page, property_ids)
+    api_property_map = api_property_map or {}
+    api_metrics = api_metrics or {}
+    property_data_map = _merge_property_data_maps(
+        html_property_url_map,
+        api_property_map,
+        page.url,
+    )
     cards_with_url_before_resolve = 0
     cards_with_url_after_resolve = 0
     property_url_resolved_count = 0
+    api_url_resolved_count = 0
 
     for card_index, raw_card in enumerate(candidate_cards):
         raw_urls = [value for value in raw_card.get("urls", []) if value]
@@ -155,10 +170,13 @@ def collect_listing_snapshot(
         if normalized_candidates:
             cards_with_url_before_resolve += 1
         property_id = _property_id(raw_card)
-        resolved_url_info = property_url_map.get(property_id or "")
-        if not normalized_candidates and resolved_url_info:
-            normalized_candidates.append(resolved_url_info["url"])
+        resolved_url_info = property_data_map.get(property_id or "") or {}
+        resolved_url = resolved_url_info.get("url") if resolved_url_info else None
+        if not normalized_candidates and resolved_url:
+            normalized_candidates.append(resolved_url)
             property_url_resolved_count += 1
+            if resolved_url_info.get("source", "").startswith("api_response:"):
+                api_url_resolved_count += 1
         valid_url_count += len(normalized_candidates)
         normalized_urls = _unique_values(normalized_candidates)
         if normalized_urls:
@@ -170,6 +188,9 @@ def collect_listing_snapshot(
             or compact_text(raw_card.get("imageAlt"))
         )
         name = explicit_name or _name_from_card_text(raw_text)
+        api_record_info = property_data_map.get(property_id or "") or {}
+        if not name and api_record_info.get("hotel_name"):
+            name = _clean_hotel_name(api_record_info.get("hotel_name"))
         if not explicit_name:
             cards_without_name_count += 1
 
@@ -202,7 +223,15 @@ def collect_listing_snapshot(
             )
 
         if record_key in records_by_key:
-            _merge_card_urls(records_by_key[record_key], normalized_urls)
+            existing_record = records_by_key[record_key]
+            _merge_card_urls(existing_record, normalized_urls)
+            _merge_duplicate_card_fields(
+                existing_record,
+                raw_card,
+                raw_text,
+                api_record_info,
+                page.url,
+            )
             continue
 
         if not name and hotel_url:
@@ -217,11 +246,11 @@ def collect_listing_snapshot(
         record["candidate_urls"] = normalized_urls
         record["raw_candidate_urls"] = _unique_values(raw_urls)
         record["url_sources"] = raw_card.get("urlSources") or []
-        if resolved_url_info and hotel_url == resolved_url_info["url"]:
+        if resolved_url and hotel_url == resolved_url:
             record["url_sources"].append(
                 {
                     "source": resolved_url_info["source"],
-                    "value": resolved_url_info["url"],
+                    "value": resolved_url,
                 }
             )
             record["url_resolution_source"] = resolved_url_info["source"]
@@ -236,7 +265,7 @@ def collect_listing_snapshot(
         record["price_value"] = parsed["price_value"]
         record["rating_text"] = parsed["rating_text"]
         record["review_count_text"] = parsed["review_count_text"]
-        record["star_rating_text"] = parsed["star_rating_text"]
+        _merge_api_record_fields(record, api_record_info)
 
         if image_url:
             record["image_url"] = urljoin(page.url, image_url)
@@ -254,7 +283,7 @@ def collect_listing_snapshot(
                 "available_anchor_hrefs": raw_card.get("anchorHrefs") or [],
                 "raw_candidate_urls": _unique_values(raw_urls),
                 "url_sources": raw_card.get("urlSources") or [],
-                "property_url_map_count": len(property_url_map),
+                "property_url_map_count": len(property_data_map),
                 "selector": raw_card.get("sourceSelector"),
                 "property_id": property_id,
                 "card_source": {
@@ -286,8 +315,13 @@ def collect_listing_snapshot(
         valid_url_count=valid_url_count,
         cards_with_url_before_resolve=cards_with_url_before_resolve,
         cards_with_url_after_resolve=cards_with_url_after_resolve,
-        property_url_map_count=len(property_url_map),
+        property_url_map_count=len(property_data_map),
         property_url_resolved_count=property_url_resolved_count,
+        api_response_count=api_metrics.get("api_response_count", 0),
+        api_json_response_count=api_metrics.get("api_json_response_count", 0),
+        api_property_count=api_metrics.get("api_property_count", 0),
+        api_url_count=api_metrics.get("api_url_count", 0),
+        api_url_resolved_count=api_url_resolved_count,
         unique_canonical_url_count=len(canonical_url_keys),
         duplicate_url_count=max(0, valid_url_count - len(canonical_url_keys)),
         unique_hotel_count=unique_hotel_count,
@@ -594,6 +628,64 @@ def _merge_record_fields(record: Dict, other: Dict) -> None:
         if value and not record.get(field):
             record[field] = value
     _merge_card_urls(record, list(other.get("candidate_urls") or []))
+
+
+def _merge_duplicate_card_fields(
+    record: Dict,
+    raw_card: Dict,
+    raw_text: Optional[str],
+    api_record_info: Dict[str, str],
+    base_url: str,
+) -> None:
+    parsed = _parse_textual_fallback(raw_text)
+    for field in ("price_value", "rating_text", "review_count_text"):
+        if parsed.get(field) and not record.get(field):
+            record[field] = parsed[field]
+
+    image_url = raw_card.get("imageUrl")
+    if image_url and not record.get("image_url"):
+        record["image_url"] = urljoin(base_url, image_url)
+
+    _merge_api_record_fields(record, api_record_info)
+
+def _merge_property_data_maps(
+    html_property_url_map: Dict[str, Dict[str, str]],
+    api_property_map: Dict[str, Dict[str, str]],
+    base_url: str,
+) -> Dict[str, Dict[str, str]]:
+    merged = {property_id: dict(info) for property_id, info in html_property_url_map.items()}
+    for property_id, api_info in api_property_map.items():
+        if not property_id:
+            continue
+        target = merged.setdefault(property_id, {})
+        raw_url = api_info.get("hotel_url") or api_info.get("url")
+        normalized_url = normalize_hotel_url(raw_url, base_url) if raw_url else None
+        if normalized_url and not target.get("url"):
+            target["url"] = normalized_url
+            target["source"] = api_info.get("source") or "api_response"
+        for field in ("hotel_name", "price_value", "rating_text", "review_count_text"):
+            if api_info.get(field) and not target.get(field):
+                target[field] = api_info[field]
+        raw_image_url = api_info.get("image_url")
+        if raw_image_url and not target.get("image_url"):
+            target["image_url"] = urljoin(base_url, raw_image_url)
+        if api_info.get("source") and not target.get("api_source"):
+            target["api_source"] = api_info["source"]
+    return merged
+
+
+def _merge_api_record_fields(record: Dict, api_record_info: Dict[str, str]) -> None:
+    if not api_record_info:
+        return
+    merged_fields = []
+    for field in ("price_value", "rating_text", "review_count_text", "image_url"):
+        value = api_record_info.get(field)
+        if value and not record.get(field):
+            record[field] = value
+            merged_fields.append(field)
+    if merged_fields:
+        record["api_field_source"] = api_record_info.get("api_source") or api_record_info.get("source")
+        record["api_merged_fields"] = merged_fields
 
 
 def _evaluate_property_url_map(page: Page, property_ids: List[str]) -> Dict[str, Dict[str, str]]:
