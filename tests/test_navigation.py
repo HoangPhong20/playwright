@@ -3,7 +3,6 @@ from urllib.parse import parse_qs, urlsplit
 
 from agoda_crawler.navigation import (
     _build_city_search_urls,
-    _with_landing_dates,
     _with_search_page,
 )
 from agoda_crawler.navigation import search as navigation_search
@@ -45,39 +44,6 @@ def test_build_city_search_urls_includes_non_localized_and_en_us_fallbacks() -> 
     assert "/en-us/search" in paths
 
 
-def test_with_landing_dates_adds_occupancy_and_los() -> None:
-    url = _with_landing_dates(
-        "https://www.agoda.com/vi-vn/city/vung-tau-vn.html?cid=-1",
-        "2026-06-10",
-        "2026-06-12",
-    )
-
-    query = parse_qs(urlsplit(url).query, keep_blank_values=True)
-    assert query["cid"] == ["-1"]
-    assert query["checkIn"] == ["2026-06-10"]
-    assert query["checkOut"] == ["2026-06-12"]
-    assert query["los"] == ["2"]
-    assert query["rooms"] == ["1"]
-    assert query["adults"] == ["2"]
-    assert query["children"] == ["0"]
-
-
-def test_with_landing_dates_keeps_custom_occupancy() -> None:
-    url = _with_landing_dates(
-        "https://www.agoda.com/vi-vn/city/vung-tau-vn.html?cid=-1",
-        "2026-06-10",
-        "2026-06-12",
-        adults=3,
-        rooms=2,
-        children=1,
-    )
-
-    query = parse_qs(urlsplit(url).query, keep_blank_values=True)
-    assert query["rooms"] == ["2"]
-    assert query["adults"] == ["3"]
-    assert query["children"] == ["1"]
-
-
 def test_with_search_page_sets_page_on_search_url() -> None:
     url = _with_search_page(
         "https://www.agoda.com/vi-vn/search?city=17190&checkIn=2026-06-10",
@@ -98,29 +64,20 @@ def test_with_search_page_rejects_non_search_url() -> None:
     ) is None
 
 
-def test_force_hotel_mode_continue_allows_missing_hotels_tab(monkeypatch, capsys) -> None:
-    def missing_tab(_page):
-        raise RuntimeError("Cannot find Hotels tab on Agoda homepage")
-
-    monkeypatch.setattr(navigation_search, "_force_hotel_mode", missing_tab)
-
-    navigation_search._force_hotel_mode_or_continue(object())
-
-    assert "Hotels tab not found" in capsys.readouterr().out
-
-
-def test_force_hotel_mode_continue_reraises_other_errors(monkeypatch) -> None:
-    def wrong_shell(_page):
-        raise RuntimeError("Activities shell is active after selecting hotel mode")
-
-    monkeypatch.setattr(navigation_search, "_force_hotel_mode", wrong_shell)
+def test_search_hotels_requires_configured_city_id(monkeypatch) -> None:
+    monkeypatch.setattr(navigation_search, "CITY_IDS", {})
 
     try:
-        navigation_search._force_hotel_mode_or_continue(object())
+        navigation_search.search_hotels_via_ui(
+            object(),
+            "Hue",
+            "2026-06-10",
+            "2026-06-11",
+        )
     except RuntimeError as exc:
-        assert "Activities shell" in str(exc)
+        assert "Missing AGODA_CITY_IDS entry" in str(exc)
     else:
-        raise AssertionError("Expected non-tab hotel mode errors to propagate")
+        raise AssertionError("Expected missing city id to fail before opening a search URL")
 
 
 def test_configured_city_id_search_opens_direct_search_url(monkeypatch) -> None:

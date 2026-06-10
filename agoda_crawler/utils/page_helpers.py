@@ -72,7 +72,7 @@ def wait_for_cards(page: Page, timeout_ms: int = CARDS_TIMEOUT) -> str:
     Wait until at least one listing-card selector matches.
 
     Strict Agoda card selectors are preferred. Broad hotel-link selectors are
-    checked only near timeout as a fallback for city landing pages.
+    checked only near timeout as a fallback for Agoda layout changes.
 
     Returns the first matching selector string.
     Raises PlaywrightTimeoutError when nothing matches within *timeout_ms*.

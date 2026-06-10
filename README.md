@@ -18,7 +18,7 @@ Command trên dùng các default trong `.env` hiện tại:
 
 ```text
 AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang
-AGODA_MAX_PAGES=0
+AGODA_MAX_PAGES=10
 AGODA_HEADLESS=true
 AGODA_ENRICH_DETAILS=true
 AGODA_MAX_DETAIL_PAGES=0
@@ -27,7 +27,7 @@ AGODA_DETAIL_CONCURRENCY=3
 AGODA_OUTPUT_DIR=data/raw
 ```
 
-`AGODA_MAX_PAGES=0` nghĩa là crawl đến khi pagination dừng. Detail enrichment đang bật và không giới hạn detail page.
+`AGODA_MAX_PAGES=10` nghĩa là crawl tối đa 10 trang kết quả mỗi city/date job. Detail enrichment đang bật và không giới hạn detail page.
 
 ## Setup
 
@@ -93,8 +93,6 @@ AGODA_MAX_SCROLL_ROUNDS=50
 AGODA_SCROLL_WAIT_MS=600
 AGODA_LISTING_FULL_SNAPSHOT_INTERVAL=5
 
-AGODA_WAIT_AFTER_SEARCH=1000
-AGODA_WAIT_AFTER_NAV=1000
 AGODA_CARDS_TIMEOUT=35000
 AGODA_CARDS_TIMEOUT_RETRY=15000
 AGODA_URL_FALLBACK_CARDS_TIMEOUT=25000
@@ -140,6 +138,11 @@ Output JSONL theo ngày:
 data/raw/agoda_hotels_YYYY-MM-DD.jsonl
 ```
 
+Raw JSONL giữ cả record `success` và `partial`. Mỗi record có thêm:
+
+- `crawl_status`: `success`, `partial`, hoặc `failed`.
+- `error_reason`: lý do record bị `partial`/`failed`, ví dụ `missing_price`.
+
 Mỗi dòng là một hotel record JSON. File được ghi theo kiểu append, nên chạy lại
 cùng ngày/cùng output dir sẽ cộng thêm dữ liệu.
 
@@ -160,7 +163,7 @@ File thường gặp:
 
 Khi crawl xong, kiểm tra log:
 
-- `Run: destinations=... stays=... jobs=... pages=all`
+- `Run: destinations=... stays=... jobs=... pages=10`
 - `Concurrency: requested_workers=... actual_workers=... detail_concurrency=... detail_pressure=... scheduling=global`
 - `Page N done: records=... new=... total=... time=...`
 - `Detail: enriching ... records with 3 workers (isolated browser/context per worker)`
@@ -193,7 +196,7 @@ python -B -m pytest -p no:cacheprovider
 - `agoda_crawler/orchestration.py`: tạo city/date jobs, chạy workers, ghi output và summary.
 - `agoda_crawler/jobs.py`: parse destinations/date range và tạo job matrix.
 - `agoda_crawler/crawler.py`: điều phối một crawl job end-to-end.
-- `agoda_crawler/navigation/`: homepage/search URL flow và pagination navigation.
+- `agoda_crawler/navigation/`: direct search URL flow và pagination navigation.
 - `agoda_crawler/listing/`: scroll listing, collect snapshot, dedupe/merge record, pagination state.
 - `agoda_crawler/extraction/`: selector/parser cho listing fields.
 - `agoda_crawler/enrichment/`: mở hotel detail page để bổ sung field thiếu.

@@ -10,7 +10,6 @@ from agoda_crawler.extraction.fields import (
     first_image_src,
     first_text,
     _empty_record,
-    _looks_like_city_landing_shell,
     _record_key,
 )
 from agoda_crawler.extraction.parsers import (
@@ -39,7 +38,6 @@ __all__ = [
     "_canonicalize_price_value",
     "_empty_record",
     "_hotel_url_key",
-    "_looks_like_city_landing_shell",
     "_name_from_hotel_url",
     "_parse_review_count",
     "_parse_review_score",

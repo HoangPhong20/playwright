@@ -66,6 +66,83 @@ def test_crawl_current_results_page_honors_scroll_wait_ms(monkeypatch) -> None:
     assert captured_timeouts == [600]
 
 
+def test_wait_for_listing_growth_skips_networkidle_when_records_grow(monkeypatch) -> None:
+    records_by_key = {}
+
+    def fake_collect(*_args, **_kwargs):
+        records_by_key["url:https://www.agoda.com/a/hotel/a.html"] = {
+            "hotel_name": "Hotel A",
+            "hotel_url": "https://www.agoda.com/a/hotel/a.html",
+        }
+        return page_crawl.ListingMergeResult(
+            snapshot=ListingCollectionSnapshot(
+                records=list(records_by_key.values()),
+                metrics=ListingCollectionMetrics(dom_card_count=2, unique_hotel_count=1),
+            ),
+            updated_existing=False,
+        )
+
+    monkeypatch.setattr(page_crawl, "LISTING_FAST_WAIT_MS", 0)
+    monkeypatch.setattr(page_crawl, "collect_and_merge_listing_snapshot", fake_collect)
+    monkeypatch.setattr(
+        page_crawl,
+        "wait_for_lazy_results",
+        lambda _page: (_ for _ in ()).throw(AssertionError("networkidle should not run")),
+    )
+
+    result = page_crawl.wait_for_listing_growth(
+        _FakePage(),
+        '[data-selenium="hotel-item"]',
+        page_number=1,
+        records_by_key=records_by_key,
+        round_number=1,
+        before_total=0,
+        before_url_count=0,
+        before_dom_count=0,
+        timeout_ms=600,
+        stall_rounds=0,
+    )
+
+    assert result.grew is True
+    assert result.used_networkidle is False
+
+
+def test_wait_for_listing_growth_uses_networkidle_after_stall_threshold(monkeypatch) -> None:
+    networkidle_calls = []
+
+    def fake_collect(*_args, **_kwargs):
+        return page_crawl.ListingMergeResult(
+            snapshot=ListingCollectionSnapshot(
+                records=[],
+                metrics=ListingCollectionMetrics(dom_card_count=0, unique_hotel_count=0),
+            ),
+            updated_existing=False,
+        )
+
+    monkeypatch.setattr(page_crawl, "LISTING_FAST_WAIT_MS", 0)
+    monkeypatch.setattr(page_crawl, "LISTING_STALL_WAIT_MS", 0)
+    monkeypatch.setattr(page_crawl, "LISTING_NETWORK_IDLE_STALL_ROUNDS", 1)
+    monkeypatch.setattr(page_crawl, "collect_and_merge_listing_snapshot", fake_collect)
+    monkeypatch.setattr(page_crawl, "wait_for_lazy_results", lambda _page: networkidle_calls.append(True))
+
+    result = page_crawl.wait_for_listing_growth(
+        _FakePage(),
+        '[data-selenium="hotel-item"]',
+        page_number=1,
+        records_by_key={},
+        round_number=1,
+        before_total=0,
+        before_url_count=0,
+        before_dom_count=0,
+        timeout_ms=1,
+        stall_rounds=1,
+    )
+
+    assert result.grew is False
+    assert result.used_networkidle is True
+    assert networkidle_calls == [True]
+
+
 def test_should_collect_full_listing_snapshot_uses_interval(monkeypatch) -> None:
     monkeypatch.setattr(page_crawl, "LISTING_FULL_SNAPSHOT_INTERVAL", 5)
 

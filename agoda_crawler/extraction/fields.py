@@ -104,7 +104,10 @@ def _extract_card(card, page_url: str, page_number: int) -> Optional[Dict]:
     if not hotel_name:
         return None
 
-    raw_text = card.inner_text(timeout=CLICK_DEFAULT)
+    try:
+        raw_text = card.inner_text(timeout=CLICK_DEFAULT)
+    except Exception:
+        raw_text = ""
     raw_snippet = _raw_snippet(raw_text)
     parsed = _parse_textual_fallback(raw_snippet)
 
@@ -200,7 +203,10 @@ def extract_from_cards(page: Page, card_selector: str, page_number: int) -> List
     for idx in range(cards.count()):
         card = cards.nth(idx)
         _scroll_card_into_view(card)
-        record = _extract_card(card, page.url, page_number)
+        try:
+            record = _extract_card(card, page.url, page_number)
+        except Exception:
+            continue
         if record:
             results.append(record)
     return results
@@ -420,9 +426,8 @@ def extract_page_results(page: Page, card_selector: str, page_number: int) -> Li
     """Extract from listing cards and supplement with distinct hotel links."""
     merged: Dict[str, Dict] = {}
 
-    if not _looks_like_city_landing_shell(page, card_selector):
-        for record in extract_from_cards(page, card_selector, page_number):
-            merged[_record_key(record)] = record
+    for record in extract_from_cards(page, card_selector, page_number):
+        merged[_record_key(record)] = record
 
     for record in extract_from_hotel_links(page, page_number):
         key = _record_key(record)
@@ -435,15 +440,6 @@ def extract_page_results(page: Page, card_selector: str, page_number: int) -> Li
                 existing[field] = value
 
     return list(merged.values())
-
-
-def _looks_like_city_landing_shell(page: Page, card_selector: str) -> bool:
-    if "/city/" not in page.url:
-        return False
-    try:
-        return page.locator(card_selector).count() <= 2 and page.locator('a[href*="/hotel/"]').count() > 20
-    except Exception:
-        return False
 
 
 def _record_key(record: Dict) -> str:

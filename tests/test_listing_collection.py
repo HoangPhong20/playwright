@@ -18,6 +18,43 @@ def test_normalize_hotel_url_rejects_non_hotel_url() -> None:
     assert normalize_hotel_url("/vi-vn/search?city=17190", "https://www.agoda.com") is None
 
 
+class _LightSnapshotPage:
+    url = "https://www.agoda.com/vi-vn/search?city=17190"
+
+    def evaluate(self, script: str, *args):
+        if "scrollY" in script:
+            return 0
+        if "PROPERTY_URL_HTML" in script:
+            raise AssertionError("light snapshots should not scan full page HTML")
+        if "document.documentElement" in script:
+            return []
+        return [
+            {
+                "urls": [],
+                "anchorHrefs": [],
+                "name": "Light Snapshot Hotel",
+                "text": "Light Snapshot Hotel 8.6 120 reviews",
+                "imageUrl": "",
+                "propertyId": "123",
+                "dataSelenium": "hotel-item",
+                "sourceSelector": '[data-selenium="hotel-item"]',
+            }
+        ]
+
+
+def test_collect_listing_snapshot_skips_html_property_map_for_light_snapshots() -> None:
+    snapshot = collect_listing_snapshot(
+        _LightSnapshotPage(),
+        '[data-selenium="hotel-item"]',
+        1,
+        include_embedded=False,
+        include_broad_selectors=False,
+    )
+
+    assert len(snapshot.records) == 1
+    assert snapshot.metrics.property_url_map_count == 0
+
+
 class _ListingPage:
     url = "https://www.agoda.com/vi-vn/search?city=17190"
 

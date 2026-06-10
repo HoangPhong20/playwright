@@ -2,7 +2,6 @@ from agoda_crawler.extraction import (
     _hotel_url_key,
     _name_from_hotel_url,
     extract_fast_hotel_links,
-    _looks_like_city_landing_shell,
     _parse_review_count,
     _canonicalize_price_value,
     _price_value_from_text,
@@ -106,27 +105,6 @@ def test_record_key_uses_normalized_hotel_url_when_present() -> None:
     assert _record_key(record) == "https://www.agoda.com/vi-vn/demo/hotel/vung-tau-vn.html"
 
 
-class _FakeLocator:
-    def __init__(self, count: int) -> None:
-        self._count = count
-
-    def count(self) -> int:
-        return self._count
-
-
-class _FakePage:
-    url = "https://www.agoda.com/vi-vn/city/vung-tau-vn.html"
-
-    def locator(self, selector: str) -> _FakeLocator:
-        if selector == 'a[href*="/hotel/"]':
-            return _FakeLocator(40)
-        return _FakeLocator(1)
-
-
-def test_city_landing_shell_detection_skips_broad_article_card() -> None:
-    assert _looks_like_city_landing_shell(_FakePage(), 'article:has(a[href*="/hotel/"])')
-
-
 class _FastLinksPage:
     url = "https://www.agoda.com/vi-vn/search?city=17190"
 
@@ -214,8 +192,13 @@ class _FieldLocator:
 
 
 class _ExtractionCard:
-    def __init__(self, raise_on_scroll: bool = False) -> None:
+    def __init__(
+        self,
+        raise_on_scroll: bool = False,
+        raise_on_inner_text: bool = False,
+    ) -> None:
         self.raise_on_scroll = raise_on_scroll
+        self.raise_on_inner_text = raise_on_inner_text
         self.scroll_timeouts = []
         self.locators: dict[str, _FieldLocator] = {
             FIELD_SELECTORS["hotel_name"][0]: _FieldLocator("Demo Hotel"),
@@ -229,6 +212,8 @@ class _ExtractionCard:
         return self.locators.get(selector, _FieldLocator())
 
     def inner_text(self, timeout: int) -> str:
+        if self.raise_on_inner_text:
+            raise TimeoutError("card text timed out")
         return "Demo Hotel VND 1000000 8.5 120 reviews"
 
     def scroll_into_view_if_needed(self, timeout: int) -> None:
@@ -275,6 +260,33 @@ def test_extract_from_cards_scrolls_each_card_and_keeps_record_on_scroll_failure
     records = extract_from_cards(_CardsPage([card]), '[data-testid="property-card"]', 1)
 
     assert card.scroll_timeouts
+    assert records[0]["hotel_name"] == "Demo Hotel"
+
+
+def test_extract_from_cards_keeps_record_when_card_text_times_out() -> None:
+    card = _ExtractionCard(raise_on_inner_text=True)
+
+    records = extract_from_cards(_CardsPage([card]), '[data-testid="property-card"]', 1)
+
+    assert records[0]["hotel_name"] == "Demo Hotel"
+    assert records[0]["price_value"] == "1000000"
+
+
+def test_extract_from_cards_skips_one_broken_card() -> None:
+    class BrokenCard:
+        def scroll_into_view_if_needed(self, timeout: int) -> None:
+            pass
+
+        def locator(self, selector: str):
+            raise RuntimeError("detached card")
+
+    records = extract_from_cards(
+        _CardsPage([BrokenCard(), _ExtractionCard()]),
+        '[data-testid="property-card"]',
+        1,
+    )
+
+    assert len(records) == 1
     assert records[0]["hotel_name"] == "Demo Hotel"
 
 
@@ -360,4 +372,3 @@ def test_extract_detail_fields_reads_price_from_script_state() -> None:
     )
 
     assert fields["price_value"] == "755000"
-

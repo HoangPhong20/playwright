@@ -1,12 +1,9 @@
 """URL and text helpers for Agoda navigation."""
-import html
 import re
 import unicodedata
 from datetime import date, datetime
 from typing import Optional
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
-
-from playwright.sync_api import Page
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 def normalize_agoda_destination(text: str) -> str:
@@ -73,38 +70,6 @@ def search_url_label(url: str) -> str:
     return f"{locale}, {price_mode}{currency_text}, city={city}"
 
 
-def find_city_search_url(page: Page) -> Optional[str]:
-    try:
-        content = page.content()
-    except Exception:
-        return None
-
-    patterns = [
-        r'"defaultSearchURL"\s*:\s*"([^"]+)"',
-        r'"baseSearchUrl"\s*:\s*"([^"]+)"',
-        r'"baseSearchURL"\s*:\s*"([^"]+)"',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, content)
-        if not match:
-            continue
-        raw_url = decode_js_url(match.group(1))
-        if "/search?" in raw_url and ("city=" in raw_url or "city%3D" in raw_url):
-            return urljoin(page.url, raw_url)
-
-    return None
-
-
-def decode_js_url(value: str) -> str:
-    decoded = value.replace(r"\u0026", "&").replace(r"\/", "/")
-    decoded = html.unescape(decoded)
-    try:
-        decoded = decoded.encode("utf-8").decode("unicode_escape")
-    except Exception:
-        pass
-    return decoded
-
-
 def build_city_search_urls(
     search_url: str,
     destination: str,
@@ -149,42 +114,6 @@ def build_city_search_urls(
         deduped.append(url)
         seen.add(url)
     return deduped
-
-
-def with_landing_dates(
-    page_url: str,
-    check_in: str,
-    check_out: str,
-    adults: int = 2,
-    rooms: int = 1,
-    children: int = 0,
-) -> str:
-    check_in_date = parse_iso_date(check_in, "check-in")
-    check_out_date = parse_iso_date(check_out, "check-out")
-    if check_out_date <= check_in_date:
-        raise ValueError("check_out must be after check_in")
-
-    split = urlsplit(page_url)
-    query = dict(parse_qsl(split.query, keep_blank_values=True))
-    query.update(
-        {
-            "checkIn": check_in_date.isoformat(),
-            "checkOut": check_out_date.isoformat(),
-            "los": str((check_out_date - check_in_date).days),
-            "rooms": str(rooms),
-            "adults": str(adults),
-            "children": str(children),
-        }
-    )
-    return urlunsplit(
-        (
-            split.scheme,
-            split.netloc,
-            split.path,
-            urlencode(query, doseq=True),
-            "",
-        )
-    )
 
 
 def city_search_url_bases(search_url: str) -> list[str]:
@@ -257,12 +186,6 @@ def with_search_dates(
             "",
         )
     )
-
-
-def destination_pattern(destination: str) -> re.Pattern:
-    normalized = normalize_agoda_destination(destination)
-    terms = [re.escape(part) for part in normalized.split() if part]
-    return re.compile(r".*".join(terms), re.I)
 
 
 def parse_iso_date(value: str, label: str) -> date:

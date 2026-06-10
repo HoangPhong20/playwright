@@ -25,7 +25,7 @@ from agoda_crawler.utils.run_output import (
     CrawlResultWriter,
     has_missing_price,
     is_incremental_publishable_record,
-    is_publishable_record,
+    is_output_record,
     print_verification_summary,
     project_output_record,
     summarize,
@@ -39,7 +39,7 @@ DEFAULT_DESTINATION = "Vung Tau"
 DEFAULT_DESTINATIONS = "Vung Tau,Da Nang,Nha Trang"
 DEFAULT_DATE_START = "2026-06-01"
 DEFAULT_DATE_END = "2026-06-30"
-DEFAULT_MAX_PAGES = 0
+DEFAULT_MAX_PAGES = 10
 DEFAULT_WORKERS = 3
 DEFAULT_DETAIL_CONCURRENCY = 2
 DEFAULT_DETAIL_TIMEOUT = 30_000
@@ -131,10 +131,10 @@ def run_crawl_job_with_browser(
             job.check_in,
             job.check_out,
         )
-        if args.print_records and is_publishable_record(annotated):
+        if args.print_records and is_output_record(annotated):
             print(as_json(project_output_record(annotated)))
         annotated_records.append(annotated)
-    public_records = [record for record in annotated_records if is_publishable_record(record)]
+    public_records = [record for record in annotated_records if is_output_record(record)]
     return CrawlJobResult(
         job=job,
         records=public_records,

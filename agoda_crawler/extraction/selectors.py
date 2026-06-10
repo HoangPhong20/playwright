@@ -103,23 +103,6 @@ PAGE_POPUP_BUTTON_SELECTORS = [
     'button:has-text("Skip")',
 ]
 
-DESTINATION_INPUT_SELECTORS = [
-    '#textInput',
-    'input[placeholder*="điểm du lịch" i]',
-    'input[placeholder*="khách sạn" i]',
-    'input[aria-label*="điểm du lịch" i]',
-    'input[aria-label*="khách sạn" i]',
-    '[data-selenium="destinationSearchInput"] input',
-    'input[data-selenium="textInput"]',
-    '[data-selenium="search-box"] input[placeholder]',
-    '[class*="SearchBox"] input[placeholder]',
-    'form[action*="search" i] input[placeholder]',
-    'input[name*="destination" i]',
-    'input[id*="destination" i]',
-    'input[placeholder*="destination" i]',
-    'input[placeholder*="property" i]',
-]
-
 NEXT_PAGE_SELECTORS = [
     "#paginationNext",
     '[data-selenium="pagination-next-btn"]',

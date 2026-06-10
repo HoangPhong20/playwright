@@ -144,7 +144,11 @@ def collect_listing_snapshot(
         for raw_card in candidate_cards
         if (property_id := _property_id(raw_card))
     ]
-    html_property_url_map = _evaluate_property_url_map(page, property_ids)
+    html_property_url_map = (
+        _evaluate_property_url_map(page, property_ids)
+        if include_embedded or include_broad_selectors
+        else {}
+    )
     api_property_map = api_property_map or {}
     api_metrics = api_metrics or {}
     property_data_map = _merge_property_data_maps(

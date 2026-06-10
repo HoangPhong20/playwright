@@ -205,13 +205,8 @@ def crawl_agoda_search(
     """
     Crawl Agoda hotel search results and return a list of hotel records.
 
-    Search is intentionally UI-only:
-    - open Agoda homepage
-    - force Hotels tab
-    - select destination suggestion
-    - select dates in calendar
-    - click Search
-    - validate hotel listing cards before extraction
+    Search opens direct Agoda listing URLs from AGODA_CITY_IDS and validates
+    hotel listing cards before extraction.
     """
     with sync_playwright() as p:
         browser = None

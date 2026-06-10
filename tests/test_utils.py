@@ -7,7 +7,10 @@ from agoda_crawler.utils import append_jsonl, utc_now_iso
 from agoda_crawler.utils.logging import log_ignored_error, log_prefix
 from agoda_crawler.utils.run_output import (
     CrawlResultWriter,
+    crawl_status,
+    error_reason,
     is_incremental_publishable_record,
+    is_output_record,
     is_publishable_record,
     print_verification_summary,
     project_output_record,
@@ -51,16 +54,20 @@ def test_crawl_result_writer_skips_final_duplicate_after_early_write(tmp_path) -
     assert json.loads(lines[0])["image_url"] is None
 
 
-def test_crawl_result_writer_skips_record_with_missing_price(tmp_path) -> None:
+def test_crawl_result_writer_writes_partial_record_with_missing_price(tmp_path) -> None:
     output_path = tmp_path / "output.jsonl"
     writer = CrawlResultWriter(output_path)
     missing_price = _publishable_record(price_value=None)
     job = CrawlJob("Vung Tau", "2026-06-10", "2026-06-11", output_path)
 
-    assert writer.write_records([missing_price]) == 0
+    assert writer.write_records([missing_price]) == 1
     assert write_crawl_result(CrawlJobResult(job, [missing_price]), writer) == 0
 
-    assert not output_path.exists()
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    output = json.loads(lines[0])
+    assert output["crawl_status"] == "partial"
+    assert output["error_reason"] == "missing_price"
 
 
 def test_publish_requires_price_and_rating_but_not_review() -> None:
@@ -74,6 +81,10 @@ def test_publish_requires_price_and_rating_but_not_review() -> None:
     assert is_publishable_record(missing_rating) is False
     assert is_publishable_record(missing_review) is True
     assert is_publishable_record(missing_image) is True
+    assert is_output_record(missing_price) is True
+    assert crawl_status(complete) == "success"
+    assert crawl_status(missing_price) == "partial"
+    assert error_reason(missing_price) == "missing_price"
     assert is_incremental_publishable_record(missing_price) is False
     assert is_incremental_publishable_record(missing_review) is False
     assert is_incremental_publishable_record(missing_image) is False
@@ -140,7 +151,11 @@ def test_project_output_record_removes_debug_fields() -> None:
         "destination",
         "check_in",
         "check_out",
+        "crawl_status",
+        "error_reason",
     ]
+    assert output["crawl_status"] == "success"
+    assert output["error_reason"] is None
     assert "canonical_url" not in output
     assert "candidate_urls" not in output
     assert "location_text" not in output

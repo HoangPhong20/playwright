@@ -21,6 +21,7 @@ from agoda_crawler.orchestration import (
     estimated_detail_pressure,
     should_fail_on_missing_price,
 )
+from agoda_crawler.utils.run_output import project_output_record
 
 
 def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
@@ -31,7 +32,7 @@ def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
     assert args.enrich_details is True
     assert args.max_detail_pages == 0
     assert args.output_dir == "data"
-    assert args.max_pages == 0
+    assert args.max_pages == 10
     assert args.destinations == "Vung Tau,Da Nang,Nha Trang"
     assert args.date_start == "2026-06-01"
     assert args.date_end == "2026-06-30"
@@ -335,7 +336,7 @@ def test_actual_worker_count_caps_requested_workers_to_jobs() -> None:
     assert actual_worker_count(3, 0) == 0
 
 
-def test_run_crawl_job_keeps_incomplete_records_debug_only(monkeypatch, tmp_path) -> None:
+def test_run_crawl_job_keeps_incomplete_records_as_partial_output(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(sys, "argv", ["main.py"])
     args = parse_args(env={})
     job = orchestration.CrawlJob(
@@ -365,7 +366,13 @@ def test_run_crawl_job_keeps_incomplete_records_debug_only(monkeypatch, tmp_path
 
     result = orchestration.run_crawl_job_with_browser(None, job, args)
 
-    assert [record["hotel_name"] for record in result.records] == ["Complete Hotel"]
+    assert [record["hotel_name"] for record in result.records] == [
+        "Complete Hotel",
+        "Missing Price",
+    ]
+    assert project_output_record(result.records[0])["crawl_status"] == "success"
+    assert project_output_record(result.records[1])["crawl_status"] == "partial"
+    assert project_output_record(result.records[1])["error_reason"] == "missing_price"
     assert [record["hotel_name"] for record in result.debug_records or []] == [
         "Complete Hotel",
         "Missing Price",

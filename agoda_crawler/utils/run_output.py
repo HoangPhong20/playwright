@@ -39,6 +39,8 @@ OUTPUT_RECORD_FIELDS = (
     "destination",
     "check_in",
     "check_out",
+    "crawl_status",
+    "error_reason",
 )
 REQUIRED_OUTPUT_FIELDS = (
     "hotel_name",
@@ -50,12 +52,58 @@ REQUIRED_OUTPUT_FIELDS = (
 
 def project_output_record(record: Dict) -> Dict:
     """Return only public crawl fields for JSONL/stdout output."""
-    return {field: record.get(field) for field in OUTPUT_RECORD_FIELDS}
+    output = {field: record.get(field) for field in OUTPUT_RECORD_FIELDS}
+    output["crawl_status"] = crawl_status(record)
+    output["error_reason"] = error_reason(record)
+    return output
 
 
 def is_publishable_record(record: Dict) -> bool:
     """Return True when a record meets the public output coverage bar."""
     return all(record.get(field) for field in REQUIRED_OUTPUT_FIELDS)
+
+
+def crawl_status(record: Dict) -> str:
+    """Return success/partial/failed for public raw output."""
+    if is_publishable_record(record):
+        return "success"
+    if _has_any_public_value(record):
+        return "partial"
+    return "failed"
+
+
+def error_reason(record: Dict) -> Optional[str]:
+    """Return comma-separated reasons for partial/failed raw records."""
+    reasons = []
+    if record.get("hotel_name") in (None, ""):
+        reasons.append("missing_name")
+    if record.get("hotel_url") in (None, ""):
+        reasons.append("missing_url")
+    if record.get("price_value") in (None, ""):
+        reasons.append("missing_price")
+    if record.get("rating_text") in (None, ""):
+        reasons.append("missing_rating")
+    if record.get("enrich_status") == "failed":
+        reasons.append("detail_enrichment_failed")
+    collect_error = record.get("collect_error")
+    if collect_error and collect_error not in reasons:
+        reasons.append(str(collect_error))
+    if not reasons:
+        return None
+    return ",".join(reasons)
+
+
+def is_output_record(record: Dict) -> bool:
+    """Return True when a record is useful enough for raw JSONL output."""
+    return crawl_status(record) in {"success", "partial"} and _has_any_public_value(record)
+
+
+def _has_any_public_value(record: Dict) -> bool:
+    return any(
+        record.get(field)
+        for field in OUTPUT_RECORD_FIELDS
+        if field not in {"crawl_status", "error_reason"}
+    )
 
 
 def is_incremental_publishable_record(record: Dict) -> bool:
@@ -204,7 +252,7 @@ def is_partial_record(record: Dict) -> bool:
 
 
 class CrawlResultWriter:
-    """Append publishable records once for a crawl job."""
+    """Append raw success/partial records once for a crawl job."""
 
     def __init__(self, output_path: Path) -> None:
         self.output_path = output_path
@@ -214,7 +262,7 @@ class CrawlResultWriter:
     def write_records(self, records: Iterable[Dict]) -> int:
         written = 0
         for record in records:
-            if not is_publishable_record(record):
+            if not is_output_record(record):
                 continue
             identity = output_record_identity(record)
             with self._lock:

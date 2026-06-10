@@ -7,6 +7,9 @@ from playwright.sync_api import Page
 
 from agoda_crawler.config import (
     LISTING_FULL_SNAPSHOT_INTERVAL,
+    LISTING_FAST_WAIT_MS,
+    LISTING_NETWORK_IDLE_STALL_ROUNDS,
+    LISTING_STALL_WAIT_MS,
     MAX_LISTING_PAGE_SECONDS,
     MIN_PAGE_HOTELS_BEFORE_STABLE,
     MIN_PAGE_HOTELS_BEFORE_FALLBACK,
@@ -59,6 +62,7 @@ class ListingWaitResult:
     updated_existing: bool
     elapsed_ms: int
     grew: bool
+    used_networkidle: bool = False
 
 
 @dataclass(frozen=True)
@@ -123,6 +127,7 @@ def crawl_current_results_page(
             before_url_count=wait_before_url_count,
             before_dom_count=wait_before_dom_count,
             timeout_ms=scroll_wait_ms,
+            stall_rounds=unchanged_rounds,
             api_capture=api_capture,
         )
         after_snapshot = wait_result.snapshot
@@ -158,6 +163,7 @@ def crawl_current_results_page(
             "moved": scroll_advance.moved,
             "wait_ms": wait_result.elapsed_ms,
             "wait_grew": wait_result.grew,
+            "wait_networkidle": wait_result.used_networkidle,
         }
         scroll_metrics.append(round_metrics)
 
@@ -317,17 +323,33 @@ def wait_for_listing_growth(
     before_url_count: int,
     before_dom_count: int,
     timeout_ms: int,
+    stall_rounds: int = 0,
     api_capture: Optional[Any] = None,
 ) -> ListingWaitResult:
     started_at = time.perf_counter()
-    deadline = started_at + max(0, timeout_ms) / 1000.0
+    timeout_ms = max(0, timeout_ms)
+    fast_wait_ms = 0
+    stall_wait_ms = 0
+    if timeout_ms > 0:
+        fast_wait_ms = min(
+            timeout_ms,
+            _bounded_wait_ms(LISTING_FAST_WAIT_MS, fallback=min(timeout_ms, 200)),
+        )
+        stall_wait_ms = max(
+            timeout_ms,
+            _bounded_wait_ms(LISTING_STALL_WAIT_MS, fallback=max(timeout_ms, 600)),
+        )
+    deadline = started_at + stall_wait_ms / 1000.0
     last_snapshot = None
     updated_existing = False
     grew = False
-    if timeout_ms > 0:
-        wait_for_lazy_results(page)
+    used_networkidle = False
 
     while True:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        if last_snapshot is None and fast_wait_ms > elapsed_ms:
+            page.wait_for_timeout(fast_wait_ms - elapsed_ms)
+
         merge_result = collect_and_merge_listing_snapshot(
             page,
             card_selector,
@@ -357,12 +379,57 @@ def wait_for_listing_growth(
             break
         page.wait_for_timeout(min(150, remaining_ms))
 
+    if (
+        not grew
+        and timeout_ms > 0
+        and stall_rounds >= max(0, LISTING_NETWORK_IDLE_STALL_ROUNDS)
+    ):
+        wait_for_lazy_results(page)
+        used_networkidle = True
+        merge_result = collect_and_merge_listing_snapshot(
+            page,
+            card_selector,
+            page_number,
+            records_by_key,
+            round_number,
+            full_snapshot=False,
+            api_capture=api_capture,
+        )
+        last_snapshot = merge_result.snapshot
+        updated_existing = merge_result.updated_existing or updated_existing
+        grew = _snapshot_has_growth(
+            records_by_key,
+            last_snapshot,
+            before_total=before_total,
+            before_url_count=before_url_count,
+            before_dom_count=before_dom_count,
+        )
+
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     return ListingWaitResult(
         snapshot=last_snapshot,
         updated_existing=updated_existing,
         elapsed_ms=elapsed_ms,
         grew=grew,
+        used_networkidle=used_networkidle,
+    )
+
+
+def _bounded_wait_ms(value: int, fallback: int) -> int:
+    return max(0, value if value is not None else fallback)
+
+
+def _snapshot_has_growth(
+    records_by_key: Dict[str, Dict],
+    snapshot: ListingCollectionSnapshot,
+    before_total: int,
+    before_url_count: int,
+    before_dom_count: int,
+) -> bool:
+    return (
+        len(records_by_key) > before_total
+        or records_with_url_count(records_by_key) > before_url_count
+        or snapshot.metrics.dom_card_count > before_dom_count
     )
 
 
