@@ -69,6 +69,7 @@ Public JSONL fields are:
 - `check_out`
 - `crawl_status`
 - `error_reason`
+- `run_id`
 
 Critical fields are `hotel_name`, `hotel_url`, `price_value`, and
 `rating_text`. Optional fields should keep strong coverage:
@@ -76,6 +77,10 @@ Critical fields are `hotel_name`, `hotel_url`, `price_value`, and
 `crawl_status` is `success` for records with all critical fields, `partial`
 when useful fields exist but critical fields are missing, and `failed` for
 severe item/page failures. `error_reason` explains partial/failed records.
+Default raw output path is
+`data/raw/source=agoda/check_in=<check_in>/run_id=<run_id>/hotels.jsonl`.
+Default debug output path is
+`data/debug/source=agoda/check_in=<check_in>/run_id=<run_id>/`.
 
 ## Development Commands
 

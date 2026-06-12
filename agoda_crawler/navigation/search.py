@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError
 
 from agoda_crawler.utils.logging import log, log_ignored_error
+from agoda_crawler.utils.debug_artifacts import save_listing_zero_cards_artifacts
 from agoda_crawler.navigation.urls import (
     build_city_search_urls as _build_city_search_urls,
     normalize_agoda_destination,
@@ -16,7 +17,11 @@ from agoda_crawler.navigation.urls import (
     url_targets_page as _url_targets_page,
     with_search_page as _with_search_page,
 )
-from agoda_crawler.utils.page_helpers import wait_for_cards
+from agoda_crawler.utils.page_helpers import (
+    format_selector_counts,
+    listing_selector_counts,
+    wait_for_cards,
+)
 from agoda_crawler.extraction.selectors import (
     BROAD_LISTING_CARD_SELECTORS,
     LISTING_CARD_SELECTORS,
@@ -417,15 +422,61 @@ def _open_search_url_candidates(
         try:
             log(f"Search URL {idx}/{len(candidates)}: {_search_url_label(target_url)}")
             page.goto(target_url, wait_until="domcontentloaded", timeout=LOAD_PAGE)
+            _log_page_state("Search after goto", page)
             _wait_for_results_ready(page, timeout_ms=URL_FALLBACK_CARDS_TIMEOUT)
+            _log_page_state("Search after wait", page)
             if _is_activities_shell(page):
+                log("Search routed to activities page, not hotel listing page")
                 raise RuntimeError("Derived URL opened Activities shell")
             return wait_for_cards(page, timeout_ms=URL_FALLBACK_CARDS_TIMEOUT)
         except Exception as exc:
             last_error = exc
+            report = save_listing_zero_cards_artifacts(
+                page,
+                destination=destination,
+                check_in=check_in,
+                check_out=check_out,
+                context={
+                    "candidate_index": idx,
+                    "candidate_total": len(candidates),
+                    "target_url": target_url,
+                    "error": str(exc).splitlines()[0],
+                },
+            )
+            counts_text = format_selector_counts(report.get("selector_counts") or {})
+            if counts_text:
+                log(f"Search URL {idx}/{len(candidates)} selector counts: {counts_text}")
+            if report.get("detected_keywords"):
+                log(
+                    "Search URL "
+                    f"{idx}/{len(candidates)} detected body keywords: "
+                    f"{', '.join(report['detected_keywords'])}"
+                )
+            if report.get("is_activities_url"):
+                log("Search routed to activities page, not hotel listing page")
             log(f"Search URL {idx}/{len(candidates)} no cards, trying next ({str(exc).splitlines()[0]})")
 
     raise RuntimeError("No configured city search URL produced hotel results") from last_error
+
+
+def _log_page_state(label: str, page: Page) -> None:
+    log(f"{label}: url={_safe_page_url(page)} title={_safe_page_title(page)}")
+    counts = listing_selector_counts(page)
+    log(f"{label}: selector counts: {format_selector_counts(counts)}")
+
+
+def _safe_page_url(page: Page) -> str:
+    try:
+        return page.url
+    except Exception:
+        return ""
+
+
+def _safe_page_title(page: Page) -> str:
+    try:
+        return page.title()
+    except Exception:
+        return ""
 
 
 def _wait_for_results_ready(

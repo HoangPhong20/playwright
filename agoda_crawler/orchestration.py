@@ -13,6 +13,8 @@ from agoda_crawler.jobs import (
     CrawlJobResult,
     annotate_record,
     build_crawl_jobs,
+    debug_output_path_for_stay,
+    ensure_run_id,
     iter_stays,
     jobs_for_stay,
     ordered_results,
@@ -20,6 +22,7 @@ from agoda_crawler.jobs import (
     parse_date,
     parse_destinations,
 )
+from agoda_crawler.utils.debug_artifacts import debug_output_context
 from agoda_crawler.utils.logging import log, log_prefix
 from agoda_crawler.utils.run_output import (
     CrawlResultWriter,
@@ -91,12 +94,20 @@ def run_crawl_job_with_browser(
         if record_writer is None:
             return
         record_writer.write_records(
-            annotate_record(item, job.destination, job.check_in, job.check_out)
+            annotate_record(
+                item,
+                job.destination,
+                job.check_in,
+                job.check_out,
+                run_id=ensure_run_id(args),
+            )
             for item in records
             if is_incremental_publishable_record(item)
         )
 
-    with log_prefix(_job_log_prefix(job)):
+    with log_prefix(_job_log_prefix(job)), debug_output_context(
+        debug_output_path_for_stay(args, job.check_in)
+    ):
         log("Job started")
         records = crawl_agoda_search_with_browser(
             browser,
@@ -130,6 +141,7 @@ def run_crawl_job_with_browser(
             job.destination,
             job.check_in,
             job.check_out,
+            run_id=ensure_run_id(args),
         )
         if args.print_records and is_output_record(annotated):
             print(as_json(project_output_record(annotated)))
@@ -226,6 +238,7 @@ def run_crawl_jobs_for_stay(
 
 
 def run_from_args(args) -> None:
+    run_id = ensure_run_id(args)
     destinations = parse_destinations(args.destinations, args.destination)
     stays = iter_stays(args)
     jobs = build_crawl_jobs(args, destinations, stays)
@@ -256,7 +269,7 @@ def run_from_args(args) -> None:
     )
     print(
         "Output: "
-        f"dir={args.output_dir} enrich={args.enrich_details} "
+        f"dir={args.output_dir} run_id={run_id} enrich={args.enrich_details} "
         f"missing_only={args.enrich_missing_only} detail_fields={args.detail_fields}"
     )
     print()
@@ -286,7 +299,7 @@ def run_from_args(args) -> None:
             for result in stay_results
             for record in (result.debug_records or result.records)
         ]
-        write_latest_outputs(debug_records)
+        write_latest_outputs(debug_records, debug_output_path_for_stay(args, check_in))
 
         print(f"\nStay {check_in} -> {check_out} complete")
         if len(debug_records) != len(stay_records):

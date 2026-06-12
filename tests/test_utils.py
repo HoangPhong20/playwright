@@ -113,6 +113,7 @@ def _publishable_record(**overrides):
         "destination": "Vung Tau",
         "check_in": "2026-06-10",
         "check_out": "2026-06-11",
+        "run_id": "test_run_001",
     }
     record.update(overrides)
     return record
@@ -131,6 +132,7 @@ def test_project_output_record_removes_debug_fields() -> None:
         "destination": "Vung Tau",
         "check_in": "2026-06-10",
         "check_out": "2026-06-11",
+        "run_id": "test_run_001",
         "canonical_url": "https://www.agoda.com/demo/hotel/demo.html",
         "candidate_urls": ["https://www.agoda.com/demo/hotel/demo.html?cid=1"],
         "_listing_scroll_round": 12,
@@ -153,7 +155,9 @@ def test_project_output_record_removes_debug_fields() -> None:
         "check_out",
         "crawl_status",
         "error_reason",
+        "run_id",
     ]
+    assert output["run_id"] == "test_run_001"
     assert output["crawl_status"] == "success"
     assert output["error_reason"] is None
     assert "canonical_url" not in output

@@ -105,6 +105,21 @@ def wait_for_cards(page: Page, timeout_ms: int = CARDS_TIMEOUT) -> str:
     )
 
 
+def listing_selector_counts(page: Page) -> Dict[str, int]:
+    """Return counts for every known strict and broad listing-card selector."""
+    counts: Dict[str, int] = {}
+    for selector in [*LISTING_CARD_SELECTORS, *BROAD_LISTING_CARD_SELECTORS]:
+        try:
+            counts[selector] = page.locator(selector).count()
+        except Exception:
+            counts[selector] = 0
+    return counts
+
+
+def format_selector_counts(counts: Dict[str, int]) -> str:
+    return ", ".join(f"{selector}={count}" for selector, count in counts.items())
+
+
 def _wait_for_matching_selector_group(
     page: Page,
     selectors: list[str],

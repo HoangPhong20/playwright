@@ -41,6 +41,7 @@ OUTPUT_RECORD_FIELDS = (
     "check_out",
     "crawl_status",
     "error_reason",
+    "run_id",
 )
 REQUIRED_OUTPUT_FIELDS = (
     "hotel_name",
@@ -309,9 +310,10 @@ def write_crawl_results(results: List[CrawlJobResult]) -> None:
         write_crawl_result(result)
 
 
-def write_latest_outputs(records: List[Dict]) -> None:
-    partial_debug_path = Path("debug/partial_missing_url_records.json")
-    missing_price_debug_path = Path("debug/missing_price_records.json")
+def write_latest_outputs(records: List[Dict], debug_dir: Optional[Path] = None) -> None:
+    active_debug_dir = debug_dir or Path("debug")
+    partial_debug_path = active_debug_dir / "logs" / "partial_missing_url_records.json"
+    missing_price_debug_path = active_debug_dir / "logs" / "missing_price_records.json"
     partial_debug_path.parent.mkdir(parents=True, exist_ok=True)
     partial_debug_records = []
     missing_price_records = []

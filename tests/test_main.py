@@ -21,6 +21,7 @@ from agoda_crawler.orchestration import (
     estimated_detail_pressure,
     should_fail_on_missing_price,
 )
+from agoda_crawler.jobs import output_path_for_stay
 from agoda_crawler.utils.run_output import project_output_record
 
 
@@ -31,7 +32,9 @@ def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
 
     assert args.enrich_details is True
     assert args.max_detail_pages == 0
-    assert args.output_dir == "data"
+    assert args.output_dir == "data/raw"
+    assert args.output_dir_explicit is False
+    assert args.run_id is None
     assert args.max_pages == 10
     assert args.destinations == "Vung Tau,Da Nang,Nha Trang"
     assert args.date_start == "2026-06-01"
@@ -80,12 +83,19 @@ def test_coverage_gate_does_not_hard_fail_missing_price_records(monkeypatch) -> 
 def test_annotate_record_adds_job_metadata() -> None:
     record = {"hotel_name": "A"}
 
-    annotated = annotate_record(record, "Vung Tau", "2026-06-10", "2026-06-11")
+    annotated = annotate_record(
+        record,
+        "Vung Tau",
+        "2026-06-10",
+        "2026-06-11",
+        run_id="test_run_001",
+    )
 
     assert annotated["destination"] == "Vung Tau"
     assert "normalized_destination" not in annotated
     assert annotated["check_in"] == "2026-06-10"
     assert annotated["check_out"] == "2026-06-11"
+    assert annotated["run_id"] == "test_run_001"
 
 
 def test_parse_detail_fields_accepts_known_fields() -> None:
@@ -133,6 +143,7 @@ def test_parse_args_accepts_output_dir(monkeypatch) -> None:
     args = parse_args(env={})
 
     assert args.output_dir == "data/raw/prod"
+    assert args.output_dir_explicit is True
 
 
 def test_parse_args_uses_env_defaults(monkeypatch) -> None:
@@ -162,6 +173,7 @@ def test_parse_args_uses_env_defaults(monkeypatch) -> None:
     assert args.max_pages == 5
     assert args.headless is True
     assert args.output_dir == "data/raw"
+    assert args.output_dir_explicit is False
     assert args.enrich_details is False
     assert args.workers == 3
     assert args.detail_concurrency == 3
@@ -275,7 +287,10 @@ def test_build_crawl_jobs_creates_destination_date_matrix(monkeypatch) -> None:
     assert jobs[0].destination == "Vung Tau"
     assert jobs[0].check_in == "2026-06-01"
     assert jobs[0].check_out == "2026-06-02"
-    assert jobs[0].output_path.name == "agoda_hotels_2026-06-01.jsonl"
+    assert jobs[0].output_path.as_posix().endswith(
+        "data/raw/source=agoda/check_in=2026-06-01/run_id="
+        f"{args.run_id}/hotels.jsonl"
+    )
     assert jobs[-1].destination == "Nha Trang"
     assert jobs[-1].check_in == "2026-06-30"
 
@@ -303,9 +318,54 @@ def test_jobs_for_stay_keeps_one_day_batch(monkeypatch) -> None:
 
     assert [job.destination for job in stay_jobs] == ["Vung Tau", "Da Nang"]
     assert {job.check_in for job in stay_jobs} == {"2026-06-01"}
-    assert {job.output_path.name for job in stay_jobs} == {
-        "agoda_hotels_2026-06-01.jsonl"
-    }
+    assert {job.output_path.name for job in stay_jobs} == {"hotels.jsonl"}
+    assert {job.output_path.parent.name for job in stay_jobs} == {f"run_id={args.run_id}"}
+
+
+def test_output_path_uses_supplied_run_id(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--date-start",
+            "2026-07-01",
+            "--date-end",
+            "2026-07-01",
+            "--run-id",
+            "test_run_001",
+        ],
+    )
+
+    args = parse_args(env={})
+    output_path = output_path_for_stay(args, "2026-07-01", 1)
+
+    assert output_path.as_posix().endswith(
+        "data/raw/source=agoda/check_in=2026-07-01/run_id=test_run_001/hotels.jsonl"
+    )
+
+
+def test_explicit_output_dir_writes_hotels_jsonl_directly(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--date-start",
+            "2026-07-01",
+            "--date-end",
+            "2026-07-01",
+            "--run-id",
+            "test_run_002",
+            "--output-dir",
+            "data/raw/custom_test",
+        ],
+    )
+
+    args = parse_args(env={})
+    output_path = output_path_for_stay(args, "2026-07-01", 1)
+
+    assert output_path.as_posix().endswith("data/raw/custom_test/hotels.jsonl")
 
 
 def test_ordered_results_restores_destination_order(monkeypatch) -> None:

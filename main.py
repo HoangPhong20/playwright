@@ -62,7 +62,16 @@ def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
     parser.add_argument("--rooms", type=int, default=env_int(config, "AGODA_ROOMS", 1), help="Number of rooms")
     parser.add_argument("--children", type=int, default=env_int(config, "AGODA_CHILDREN", 0), help="Number of children")
     parser.add_argument("--locale", default=config.get("AGODA_LOCALE", DEFAULT_LOCALE), help="Agoda locale, e.g. en-us or vi-vn")
-    parser.add_argument("--output-dir", default=config.get("AGODA_OUTPUT_DIR", "data"), help="Directory for dated JSONL output")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output directory; omitted uses partitioned data lake layout",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=config.get("AGODA_RUN_ID"),
+        help="Run identifier for partitioned output; generated when omitted",
+    )
     parser.add_argument(
         "--enrich-details",
         action=argparse.BooleanOptionalAction,
@@ -140,7 +149,11 @@ def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
         default=env_bool(config, "AGODA_PRINT_RECORDS", False),
         help="Print each crawled JSON record to stdout",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.output_dir_explicit = args.output_dir is not None
+    if args.output_dir is None:
+        args.output_dir = config.get("AGODA_OUTPUT_DIR", "data/raw")
+    return args
 
 
 def main() -> None:

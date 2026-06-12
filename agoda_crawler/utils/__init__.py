@@ -28,9 +28,43 @@ def make_output_path(base_dir: str = "data") -> Path:
     return path
 
 
+def make_run_id(now: Optional[datetime] = None) -> str:
+    active_time = now or datetime.now()
+    return f"manual_{active_time.strftime('%Y%m%d_%H%M%S')}"
+
+
+def make_partitioned_output_path(base_dir: str, check_in: str, run_id: str) -> Path:
+    path = (
+        Path(base_dir)
+        / "source=agoda"
+        / f"check_in={check_in}"
+        / f"run_id={run_id}"
+        / "hotels.jsonl"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def make_explicit_output_path(output_dir: str) -> Path:
+    path = Path(output_dir) / "hotels.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def make_daily_output_path(base_dir: str, check_in: str) -> Path:
     path = Path(base_dir) / f"agoda_hotels_{check_in}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def make_debug_output_dir(check_in: str, run_id: str) -> Path:
+    path = (
+        Path("data/debug")
+        / "source=agoda"
+        / f"check_in={check_in}"
+        / f"run_id={run_id}"
+    )
+    path.mkdir(parents=True, exist_ok=True)
     return path
 
 

@@ -4,7 +4,12 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List
 
-from agoda_crawler.utils import make_daily_output_path
+from agoda_crawler.utils import (
+    make_debug_output_dir,
+    make_explicit_output_path,
+    make_partitioned_output_path,
+    make_run_id,
+)
 
 
 @dataclass(frozen=True)
@@ -56,16 +61,38 @@ def iter_stays(args) -> List[tuple[str, str]]:
     return [(parse_date(args.check_in).isoformat(), parse_date(args.check_out).isoformat())]
 
 
-def annotate_record(record: Dict, destination: str, check_in: str, check_out: str) -> Dict:
+def ensure_run_id(args) -> str:
+    run_id = getattr(args, "run_id", None)
+    if not run_id:
+        run_id = make_run_id()
+        setattr(args, "run_id", run_id)
+    return run_id
+
+
+def annotate_record(
+    record: Dict,
+    destination: str,
+    check_in: str,
+    check_out: str,
+    run_id: str | None = None,
+) -> Dict:
     enriched = dict(record)
     enriched["destination"] = destination
     enriched["check_in"] = check_in
     enriched["check_out"] = check_out
+    if run_id:
+        enriched["run_id"] = run_id
     return enriched
 
 
 def output_path_for_stay(args, check_in: str, total_stays: int) -> Path:
-    return make_daily_output_path(args.output_dir, check_in)
+    if getattr(args, "output_dir_explicit", False):
+        return make_explicit_output_path(args.output_dir)
+    return make_partitioned_output_path(args.output_dir, check_in, ensure_run_id(args))
+
+
+def debug_output_path_for_stay(args, check_in: str) -> Path:
+    return make_debug_output_dir(check_in, ensure_run_id(args))
 
 
 def build_crawl_jobs(

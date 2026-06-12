@@ -11,7 +11,7 @@ Chạy bằng PowerShell từ thư mục dự án:
 ```powershell
 cd D:\DE\PlayWright
 .\venv\Scripts\Activate.ps1
-python main.py --date-start 2026-06-10 --date-end 2026-06-10
+python main.py --date-start 2026-07-01 --date-end 2026-07-01
 ```
 
 Command trên dùng các default trong `.env` hiện tại:
@@ -54,14 +54,14 @@ Smoke test nhanh, 1 city, 1 page, không mở detail:
 
 ```powershell
 python main.py --destinations "Vung Tau" `
-  --date-start 2026-06-10 --date-end 2026-06-10 `
+  --date-start 2026-07-01 --date-end 2026-07-01 `
   --max-pages 1 --workers 1 --no-enrich-details
 ```
 
 Production 3 city, 1 ngày, full pages, full detail:
 
 ```powershell
-python main.py --date-start 2026-06-10 --date-end 2026-06-10
+python main.py --date-start 2026-07-01 --date-end 2026-07-01
 ```
 
 Override city/date khi cần:
@@ -74,7 +74,7 @@ python main.py --destinations "Vung Tau,Da Nang,Nha Trang" `
 Ghi ra thư mục riêng để tránh append vào file cũ:
 
 ```powershell
-python main.py --date-start 2026-06-10 --date-end 2026-06-10 `
+python main.py --date-start 2026-07-01 --date-end 2026-07-01 `
   --output-dir data/raw/run_2026_06_10
 ```
 
@@ -135,8 +135,11 @@ site live, bỏ `image` khỏi `AGODA_BLOCK_RESOURCE_TYPES`.
 Output JSONL theo ngày:
 
 ```text
-data/raw/agoda_hotels_YYYY-MM-DD.jsonl
+data/raw/source=agoda/check_in=YYYY-MM-DD/run_id=<run_id>/hotels.jsonl
+data/debug/source=agoda/check_in=YYYY-MM-DD/run_id=<run_id>/
 ```
+
+Neu khong truyen `--run-id`, crawler tu sinh `manual_YYYYMMDD_HHMMSS`.
 
 Raw JSONL giữ cả record `success` và `partial`. Mỗi record có thêm:
 
