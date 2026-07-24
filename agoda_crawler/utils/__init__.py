@@ -21,13 +21,6 @@ def compact_text(value: Optional[str]) -> Optional[str]:
     return cleaned if cleaned else None
 
 
-def make_output_path(base_dir: str = "data") -> Path:
-    today = datetime.now().date().isoformat()
-    path = Path(base_dir) / f"agoda_hotels_{today}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def make_daily_output_path(base_dir: str, check_in: str) -> Path:
     path = Path(base_dir) / f"agoda_hotels_{check_in}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -11,10 +11,10 @@ from agoda_crawler.config import (
     MIN_PAGE_HOTELS_BEFORE_STABLE,
     MIN_PAGE_HOTELS_BEFORE_FALLBACK,
     MIN_PAGE_HOTELS_BEFORE_TIME_CAP,
-    PAGE_SCROLL_ROUNDS,
-    PAGE_STABLE_ROUNDS,
+    MAX_SCROLL_ROUNDS,
+    STABLE_ROUNDS,
     SAVE_DEBUG_ARTIFACTS,
-    SCROLL_PAUSE,
+    SCROLL_WAIT_MS,
     WAIT_BEFORE_SCRAPE,
 )
 from agoda_crawler.extraction import extract_page_results
@@ -71,9 +71,9 @@ def crawl_current_results_page(
     page: Page,
     card_selector: str,
     page_number: int,
-    max_rounds: int = PAGE_SCROLL_ROUNDS,
-    stable_rounds: int = PAGE_STABLE_ROUNDS,
-    scroll_wait_ms: int = SCROLL_PAUSE,
+    max_rounds: int = MAX_SCROLL_ROUNDS,
+    stable_rounds: int = STABLE_ROUNDS,
+    scroll_wait_ms: int = SCROLL_WAIT_MS,
 ) -> PageCrawlResult:
     page_started_at = time.perf_counter()
     records_by_key: Dict[str, Dict] = {}
@@ -205,7 +205,7 @@ def crawl_current_results_page(
         )
     )
     if should_run_fallback:
-        for record in extract_page_results(page, card_selector, page_number):
+        for record in extract_page_results(page, card_selector):
             attach_listing_metrics(record, page_number, last_metrics, completed_rounds)
             merge_page_record(records_by_key, record)
 
@@ -387,6 +387,7 @@ def probe_current_page_state(
     card_selector: str,
     page_number: int,
     scroll_y_after_navigation: int,
+    scroll_wait_ms: int,
 ) -> PaginationState:
     records_by_key: Dict[str, Dict] = {}
     handle_cookie_popup(page)
@@ -401,7 +402,7 @@ def probe_current_page_state(
 
     scroll_advance = advance_results_scroll(page)
     if scroll_advance.moved:
-        page.wait_for_timeout(min(SCROLL_PAUSE, 800))
+        page.wait_for_timeout(min(max(0, scroll_wait_ms), 800))
         wait_for_lazy_results(page)
         collect_and_merge_listing_snapshot(
             page,

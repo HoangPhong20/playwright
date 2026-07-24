@@ -2,7 +2,7 @@
 
 Crawler Python/Playwright để thu thập kết quả khách sạn Agoda theo nhiều
 thành phố và ngày check-in. Output chính là JSONL theo ngày, phù hợp cho
-phân tích giá, rating, review, vị trí, ảnh và dữ liệu detail.
+phân tích giá, rating, review và số sao.
 
 ## Quick Start
 
@@ -22,8 +22,9 @@ AGODA_MAX_PAGES=0
 AGODA_HEADLESS=true
 AGODA_ENRICH_DETAILS=true
 AGODA_MAX_DETAIL_PAGES=0
-AGODA_WORKERS=3
+AGODA_WORKERS=2
 AGODA_DETAIL_CONCURRENCY=3
+AGODA_MIN_OPTIONAL_COVERAGE=90
 AGODA_OUTPUT_DIR=data/raw
 ```
 
@@ -80,19 +81,19 @@ python main.py --date-start 2026-06-10 --date-end 2026-06-10 `
 
 ## Runtime Tuning
 
-Cấu hình mặc định đang ưu tiên full detail trước, tốc độ sau:
+Cấu hình mặc định cân bằng runtime và độ phủ dữ liệu:
 
 ```text
-AGODA_WORKERS=3
+AGODA_WORKERS=2
 AGODA_DETAIL_CONCURRENCY=3
+AGODA_MIN_OPTIONAL_COVERAGE=90
 AGODA_DETAIL_TIMEOUT=30000
 AGODA_FIELD_RETRY_TIMEOUT=1200
 AGODA_FIELD_RETRY_COUNT=2
 
 AGODA_MAX_SCROLL_ROUNDS=50
 AGODA_SCROLL_WAIT_MS=600
-AGODA_SCROLL_PAUSE=600
-AGODA_PAGE_SCROLL_ROUNDS=40
+AGODA_STABLE_ROUNDS=3
 AGODA_LISTING_FULL_SNAPSHOT_INTERVAL=5
 
 AGODA_WAIT_AFTER_SEARCH=1000
@@ -108,9 +109,8 @@ Nếu máy hoặc network yếu, hạ detail concurrency trước:
 
 ```text
 AGODA_DETAIL_CONCURRENCY=2
-AGODA_DETAIL_WORKERS=2
 AGODA_SCROLL_WAIT_MS=800
-AGODA_SCROLL_PAUSE=800
+AGODA_STABLE_ROUNDS=3
 ```
 
 Crawler thu listing record ngay trong từng vòng scroll, nên scroll tới đâu thì
@@ -120,8 +120,7 @@ Trong lúc scroll, crawler dùng snapshot nhẹ cho các vòng poll và chỉ ch
 snapshot đầy đủ định kỳ/cuối page để giảm số lần quét DOM/HTML lớn.
 
 Network route blocking mặc định chặn image/font/media request và một số tracking
-URL. Crawler vẫn đọc `image_url` từ DOM attributes; nếu coverage ảnh giảm trên
-site live, bỏ `image` khỏi `AGODA_BLOCK_RESOURCE_TYPES`.
+URL để giảm tải cho browser.
 
 ## Important Arguments
 
@@ -156,6 +155,7 @@ File thường gặp:
 
 - `debug/missing_price_records.json`: record thiếu `price_value`.
 - `debug/partial_missing_url_records.json`: record thiếu `hotel_url`.
+- `debug/discarded_records.json`: record bị loại vì thiếu `hotel_name`, `hotel_url` hoặc `price_value`.
 - `debug/pagination_errors/`: bằng chứng khi pagination duplicate hoặc bất thường.
 - `debug/listing_errors/`: snapshot khi listing DOM khó parse.
 
@@ -164,16 +164,16 @@ File thường gặp:
 Khi crawl xong, kiểm tra log:
 
 - `Run: destinations=... stays=... jobs=... pages=all`
-- `Concurrency: workers=3 detail=3`
+- `Concurrency: workers=2 detail=3`
 - `Page N done: records=... new=... total=... time=...`
 - `Detail: enriching ... records with 3 workers`
 - `Timing total: search=... listing=... detail=... total=... bottleneck=...`
 - `Network: blocking types=font,image,media keywords=7`
-- `VERIFY_COVERAGE_STATUS=success`
+- `VERIFY_OPTIONAL_COVERAGE_STATUS=success` hoặc `warning`
+- `VERIFY_DISCARDED_RECORDS=...`
 
 Nếu nhiều page liên tiếp `new=0` hoặc `duplicate`, dữ liệu có thể đã bão hòa hoặc Agoda đang trả page lặp.
-Run full detail không giới hạn sẽ fail process nếu còn thiếu `price_value`.
-Run smoke/partial có `--max-detail-pages > 0` chỉ cảnh báo coverage.
+Record thiếu `hotel_name`, `hotel_url` hoặc `price_value` sẽ bị loại khỏi JSONL public và lưu để debug, nhưng không làm process fail. `rating_text`, `review_count_text` và `star_rating_text` vẫn được ghi khi thiếu; mỗi field cảnh báo nếu coverage không vượt `90%`.
 
 ## Tests
 
@@ -210,5 +210,5 @@ python -B -m pytest -p no:cacheprovider
 - Không commit credentials, cookies, PII hoặc crawl output lớn.
 - `data/` và `debug/` là transient; dùng `--output-dir` riêng cho run cần so sánh.
 - Full detail tốn thời gian vì mỗi hotel có thể cần mở detail page.
-- Với `workers=3` và `detail-concurrency=3`, runtime có thể mở khoảng 9
+- Với `workers=2` và `detail-concurrency=3`, runtime có thể mở khoảng 6
   detail pages song song; nên dùng máy RAM 8 GB tối thiểu, 16 GB tốt hơn.

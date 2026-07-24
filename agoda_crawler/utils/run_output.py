@@ -3,6 +3,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List
 
+from agoda_crawler.config import MIN_OPTIONAL_COVERAGE
 from agoda_crawler.jobs import CrawlJobResult
 from agoda_crawler.utils import append_jsonl, as_json
 
@@ -14,8 +15,6 @@ FIELDS_TO_CHECK = [
     "rating_text",
     "review_count_text",
     "star_rating_text",
-    "location_text",
-    "image_url",
 ]
 
 OUTPUT_RECORD_FIELDS = (
@@ -25,8 +24,6 @@ OUTPUT_RECORD_FIELDS = (
     "rating_text",
     "review_count_text",
     "star_rating_text",
-    "location_text",
-    "image_url",
     "crawled_at",
     "destination",
     "normalized_destination",
@@ -37,9 +34,8 @@ REQUIRED_OUTPUT_FIELDS = (
     "hotel_name",
     "hotel_url",
     "price_value",
-    "rating_text",
-    "review_count_text",
 )
+OPTIONAL_COVERAGE_FIELDS = ("rating_text", "review_count_text", "star_rating_text")
 
 
 def project_output_record(record: Dict) -> Dict:
@@ -52,7 +48,30 @@ def is_publishable_record(record: Dict) -> bool:
     return all(record.get(field) for field in REQUIRED_OUTPUT_FIELDS)
 
 
-def summarize(records: List[Dict]) -> None:
+def missing_required_fields(record: Dict) -> tuple[str, ...]:
+    return tuple(field for field in REQUIRED_OUTPUT_FIELDS if not record.get(field))
+
+
+def field_coverage_percentage(records: List[Dict], field: str) -> float:
+    if not records:
+        return 0.0
+    present = sum(1 for record in records if record.get(field))
+    return present * 100.0 / len(records)
+
+
+def optional_coverage_status(
+    records: List[Dict],
+    minimum_coverage: float = MIN_OPTIONAL_COVERAGE,
+) -> tuple[str, Dict[str, float]]:
+    coverage = {
+        field: field_coverage_percentage(records, field)
+        for field in OPTIONAL_COVERAGE_FIELDS
+    }
+    status = "success" if all(value > minimum_coverage for value in coverage.values()) else "warning"
+    return status, coverage
+
+
+def summarize(records: List[Dict], minimum_optional_coverage: float = MIN_OPTIONAL_COVERAGE) -> None:
     total = len(records)
     missing = Counter()
     for rec in records:
@@ -73,18 +92,23 @@ def summarize(records: List[Dict]) -> None:
         present_pct = present * 100.0 / total
         print(f"- {field}: {present}/{total} ({present_pct:.1f}%), missing={miss}")
 
-    likely_detail_page_fields = [
-        field for field in FIELDS_TO_CHECK if (missing[field] / total) >= 0.5
-    ]
-    if likely_detail_page_fields:
-        print("Low optional/detail coverage:")
-        for field in likely_detail_page_fields:
-            print(f"- {field}")
+    optional_status, optional_coverage = optional_coverage_status(records, minimum_optional_coverage)
+    if optional_status == "warning":
+        print(f"Optional coverage warning: each field must be > {minimum_optional_coverage:.1f}%")
+        for field, coverage in optional_coverage.items():
+            if coverage <= minimum_optional_coverage:
+                print(f"- {field}: {coverage:.1f}%")
     else:
-        print("Listing coverage is sufficient for most fields.")
+        print(f"Optional coverage rule passed: each field is > {minimum_optional_coverage:.1f}%.")
 
 
-def print_verification_summary(records: List[Dict], elapsed_seconds: int) -> None:
+def print_verification_summary(
+    records: List[Dict],
+    elapsed_seconds: int,
+    discarded_records: List[Dict] | None = None,
+    minimum_optional_coverage: float = MIN_OPTIONAL_COVERAGE,
+) -> None:
+    discarded_records = discarded_records or []
     detail_attempted = sum(1 for rec in records if rec.get("enrich_status") in {"attempted", "success", "failed"})
     detail_success = sum(1 for rec in records if rec.get("enrich_status") == "success")
     detail_failed = sum(1 for rec in records if rec.get("enrich_status") == "failed")
@@ -111,7 +135,8 @@ def print_verification_summary(records: List[Dict], elapsed_seconds: int) -> Non
     pages_requested = pagination.get("pages_requested", 0)
     pages_requested_label = pages_requested if pages_requested else "all"
     price_present = sum(1 for rec in records if rec.get("price_value"))
-    coverage_status = "failed" if missing_price else "success"
+    optional_status, optional_coverage = optional_coverage_status(records, minimum_optional_coverage)
+    coverage_status = "warning" if discarded_records else "success"
 
     print("Verify:")
     print(f"- seconds={elapsed_seconds}")
@@ -149,6 +174,7 @@ def print_verification_summary(records: List[Dict], elapsed_seconds: int) -> Non
         print(f"- page_records: {page_counts}")
     print(f"- scroll_rounds={scroll_rounds} target={','.join(selected_targets) if selected_targets else ''}")
     print(f"- visible_dom_max={max_visible_dom_cards}")
+    print(f"- discarded_records={len(discarded_records)}")
     print(f"VERIFY_RECORDS_TOTAL={len(records)}")
     print(f"VERIFY_RECORDS_WITH_URL={records_with_url}")
     print(f"VERIFY_RECORDS_MISSING_URL={missing_url}")
@@ -158,6 +184,11 @@ def print_verification_summary(records: List[Dict], elapsed_seconds: int) -> Non
     print(f"VERIFY_DETAIL_ATTEMPTED={detail_attempted}")
     print(f"VERIFY_DETAIL_SUCCESS={detail_success}")
     print(f"VERIFY_DETAIL_FAILED={detail_failed}")
+    print(f"VERIFY_RATING_COVERAGE={optional_coverage['rating_text']:.1f}")
+    print(f"VERIFY_REVIEW_COUNT_COVERAGE={optional_coverage['review_count_text']:.1f}")
+    print(f"VERIFY_STAR_RATING_COVERAGE={optional_coverage['star_rating_text']:.1f}")
+    print(f"VERIFY_OPTIONAL_COVERAGE_STATUS={optional_status}")
+    print(f"VERIFY_DISCARDED_RECORDS={len(discarded_records)}")
     print(f"VERIFY_COVERAGE_STATUS={coverage_status}")
 
 
@@ -178,9 +209,11 @@ def write_crawl_results(results: List[CrawlJobResult]) -> None:
 def write_latest_outputs(records: List[Dict]) -> None:
     partial_debug_path = Path("debug/partial_missing_url_records.json")
     missing_price_debug_path = Path("debug/missing_price_records.json")
+    discarded_debug_path = Path("debug/discarded_records.json")
     partial_debug_path.parent.mkdir(parents=True, exist_ok=True)
     partial_debug_records = []
     missing_price_records = []
+    discarded_records = []
     for record in records:
         if not record.get("hotel_url"):
             partial_debug_records.append(
@@ -219,8 +252,23 @@ def write_latest_outputs(records: List[Dict]) -> None:
                     "selector": record.get("card_source"),
                 }
             )
+        missing_required = missing_required_fields(record)
+        if missing_required:
+            discarded_records.append(
+                {
+                    "hotel_name": record.get("hotel_name"),
+                    "hotel_url": record.get("hotel_url"),
+                    "price_value": record.get("price_value"),
+                    "missing_required_fields": list(missing_required),
+                    "collect_status": record.get("collect_status"),
+                    "enrich_status": record.get("enrich_status"),
+                    "enrich_error": record.get("enrich_error"),
+                    "card_text_preview": record.get("card_text_preview"),
+                }
+            )
     _write_error_debug_json(partial_debug_path, partial_debug_records)
     _write_error_debug_json(missing_price_debug_path, missing_price_records)
+    _write_error_debug_json(discarded_debug_path, discarded_records)
 
 
 def _write_error_debug_json(path: Path, records: List[Dict]) -> None:
@@ -231,8 +279,3 @@ def _write_error_debug_json(path: Path, records: List[Dict]) -> None:
         path.unlink()
     except FileNotFoundError:
         pass
-
-
-def has_missing_price(records: List[Dict]) -> bool:
-    publishable_candidates = [record for record in records if record.get("hotel_url")]
-    return any(not record.get("price_value") for record in publishable_candidates)

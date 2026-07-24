@@ -10,9 +10,9 @@ from agoda_crawler.config import (
     FIELD_RETRY_TIMEOUT,
     LOW_NEW_RECORD_ROUNDS,
     LOW_NEW_RECORD_THRESHOLD,
-    PAGE_SCROLL_ROUNDS,
-    PAGE_STABLE_ROUNDS,
-    SCROLL_PAUSE,
+    MAX_SCROLL_ROUNDS,
+    SCROLL_WAIT_MS,
+    STABLE_ROUNDS,
 )
 from agoda_crawler.enrichment.detail import (
     DEFAULT_DETAIL_ENRICH_FIELDS,
@@ -61,8 +61,6 @@ PAGINATION_NAVIGATION_ATTEMPTS = 3
 
 def _navigate_to_results(
     page: Page,
-    start_url: str,
-    use_homepage_flow: bool,
     destination: str,
     check_in: str,
     check_out: str,
@@ -73,15 +71,8 @@ def _navigate_to_results(
     """
     Run the Agoda hotel search using homepage UI only.
 
-    `start_url` and `use_homepage_flow` are kept for CLI/API compatibility, but
-    the crawler no longer loads direct `/search?...` URLs or mutates query
-    params. The navigation module validates the page by hotel card presence.
+    The navigation module validates the results page by hotel card presence.
     """
-    if start_url:
-        log("Search: ignoring --start-url because UI flow is required")
-    if not use_homepage_flow:
-        log("Search: using homepage UI flow")
-
     return search_hotels_via_ui(
         page,
         destination=destination,
@@ -139,7 +130,7 @@ def _enrich_pending_records(
     children: int,
     detail_pages_used: int,
     max_detail_pages: int,
-    detail_workers: int,
+    detail_concurrency: int,
     headless: bool,
     locale: str,
     enrich_missing_only: bool,
@@ -175,7 +166,7 @@ def _enrich_pending_records(
         rooms=rooms,
         children=children,
         max_detail_pages=0,
-        detail_workers=max(1, detail_workers),
+        detail_concurrency=max(1, detail_concurrency),
         headless=headless,
         locale=locale,
         enrich_missing_only=enrich_missing_only,
@@ -188,10 +179,8 @@ def _enrich_pending_records(
 
 
 def crawl_agoda_search(
-    start_url: str,
     max_pages: int = 2,
     headless: bool = False,
-    use_homepage_flow: bool = False,
     destination: str = "Vung Tau",
     check_in: str = "2026-06-10",
     check_out: str = "2026-06-11",
@@ -201,12 +190,12 @@ def crawl_agoda_search(
     locale: str = "vi-vn",
     enrich_details: bool = False,
     max_detail_pages: int = 10,
-    detail_workers: int = 1,
+    detail_concurrency: int = 1,
     enrich_missing_only: bool = True,
     detail_timeout: int = DETAIL_TIMEOUT,
-    max_scroll_rounds: int = PAGE_SCROLL_ROUNDS,
-    stable_rounds: int = PAGE_STABLE_ROUNDS,
-    scroll_wait_ms: int = SCROLL_PAUSE,
+    max_scroll_rounds: int = MAX_SCROLL_ROUNDS,
+    stable_rounds: int = STABLE_ROUNDS,
+    scroll_wait_ms: int = SCROLL_WAIT_MS,
     detail_fields: tuple[str, ...] = DEFAULT_DETAIL_ENRICH_FIELDS,
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
@@ -228,9 +217,7 @@ def crawl_agoda_search(
             browser = p.chromium.launch(headless=headless)
             return crawl_agoda_search_with_browser(
                 browser,
-                start_url=start_url,
                 max_pages=max_pages,
-                use_homepage_flow=use_homepage_flow,
                 destination=destination,
                 check_in=check_in,
                 check_out=check_out,
@@ -240,7 +227,7 @@ def crawl_agoda_search(
                 locale=locale,
                 enrich_details=enrich_details,
                 max_detail_pages=max_detail_pages,
-                detail_workers=detail_workers,
+                detail_concurrency=detail_concurrency,
                 enrich_missing_only=enrich_missing_only,
                 detail_timeout=detail_timeout,
                 max_scroll_rounds=max_scroll_rounds,
@@ -261,10 +248,8 @@ def crawl_agoda_search(
 
 def crawl_agoda_search_with_browser(
     browser: Browser,
-    start_url: str,
     max_pages: int = 2,
     headless: bool = True,
-    use_homepage_flow: bool = False,
     destination: str = "Vung Tau",
     check_in: str = "2026-06-10",
     check_out: str = "2026-06-11",
@@ -274,12 +259,12 @@ def crawl_agoda_search_with_browser(
     locale: str = "vi-vn",
     enrich_details: bool = False,
     max_detail_pages: int = 10,
-    detail_workers: int = 1,
+    detail_concurrency: int = 1,
     enrich_missing_only: bool = True,
     detail_timeout: int = DETAIL_TIMEOUT,
-    max_scroll_rounds: int = PAGE_SCROLL_ROUNDS,
-    stable_rounds: int = PAGE_STABLE_ROUNDS,
-    scroll_wait_ms: int = SCROLL_PAUSE,
+    max_scroll_rounds: int = MAX_SCROLL_ROUNDS,
+    stable_rounds: int = STABLE_ROUNDS,
+    scroll_wait_ms: int = SCROLL_WAIT_MS,
     detail_fields: tuple[str, ...] = DEFAULT_DETAIL_ENRICH_FIELDS,
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
@@ -299,8 +284,6 @@ def crawl_agoda_search_with_browser(
         search_started_at = time.perf_counter()
         card_selector = _navigate_to_results(
             page,
-            start_url,
-            use_homepage_flow,
             destination,
             check_in,
             check_out,
@@ -377,6 +360,7 @@ def crawl_agoda_search_with_browser(
                     card_selector,
                     target_page,
                     scroll_y_after_navigation=scroll_y_after_navigation,
+                    scroll_wait_ms=scroll_wait_ms,
                 )
                 probe_evidence = (
                     _pagination_change_evidence(accepted_state, probe_state)
@@ -502,7 +486,7 @@ def crawl_agoda_search_with_browser(
                 children,
                 detail_pages_used,
                 max(0, max_detail_pages),
-                detail_workers,
+                detail_concurrency,
                 headless,
                 locale,
                 enrich_missing_only,

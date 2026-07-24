@@ -59,8 +59,6 @@ def iter_stays(args) -> List[tuple[str, str]]:
 def annotate_record(record: Dict, destination: str, check_in: str, check_out: str) -> Dict:
     enriched = dict(record)
     normalized_destination = normalize_agoda_destination(destination)
-    if enriched.get("location_text"):
-        enriched["location_status"] = "source"
     enriched["destination"] = destination
     enriched["normalized_destination"] = normalized_destination
     enriched["check_in"] = check_in
@@ -68,7 +66,7 @@ def annotate_record(record: Dict, destination: str, check_in: str, check_out: st
     return enriched
 
 
-def output_path_for_stay(args, check_in: str, total_stays: int) -> Path:
+def output_path_for_stay(args, check_in: str) -> Path:
     return make_daily_output_path(args.output_dir, check_in)
 
 
@@ -79,7 +77,7 @@ def build_crawl_jobs(
 ) -> List[CrawlJob]:
     jobs: List[CrawlJob] = []
     for check_in, check_out in stays:
-        output_path = output_path_for_stay(args, check_in, len(stays))
+        output_path = output_path_for_stay(args, check_in)
         for destination in destinations:
             jobs.append(
                 CrawlJob(

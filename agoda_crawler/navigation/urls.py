@@ -17,11 +17,6 @@ def normalize_agoda_destination(text: str) -> str:
     return normalized
 
 
-def with_search_page(page_url: str, page_number: int) -> Optional[str]:
-    urls = search_page_urls(page_url, page_number)
-    return urls[0] if urls else None
-
-
 def search_page_urls(page_url: str, page_number: int) -> list[str]:
     if page_number < 1:
         return []
@@ -149,42 +144,6 @@ def build_city_search_urls(
         deduped.append(url)
         seen.add(url)
     return deduped
-
-
-def with_landing_dates(
-    page_url: str,
-    check_in: str,
-    check_out: str,
-    adults: int = 2,
-    rooms: int = 1,
-    children: int = 0,
-) -> str:
-    check_in_date = parse_iso_date(check_in, "check-in")
-    check_out_date = parse_iso_date(check_out, "check-out")
-    if check_out_date <= check_in_date:
-        raise ValueError("check_out must be after check_in")
-
-    split = urlsplit(page_url)
-    query = dict(parse_qsl(split.query, keep_blank_values=True))
-    query.update(
-        {
-            "checkIn": check_in_date.isoformat(),
-            "checkOut": check_out_date.isoformat(),
-            "los": str((check_out_date - check_in_date).days),
-            "rooms": str(rooms),
-            "adults": str(adults),
-            "children": str(children),
-        }
-    )
-    return urlunsplit(
-        (
-            split.scheme,
-            split.netloc,
-            split.path,
-            urlencode(query, doseq=True),
-            "",
-        )
-    )
 
 
 def city_search_url_bases(search_url: str) -> list[str]:

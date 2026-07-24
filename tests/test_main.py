@@ -1,20 +1,19 @@
 import sys
 
-from agoda_crawler.config import load_dotenv
-from main import (
-    annotate_record,
+import pytest
+
+from agoda_crawler.config import load_config_env, load_dotenv
+from agoda_crawler.jobs import (
     CrawlJobResult,
     build_crawl_jobs,
-    has_missing_price,
     iter_stays,
     jobs_for_stay,
     ordered_results,
-    parse_args,
     parse_date,
     parse_destinations,
-    parse_detail_fields,
 )
-from agoda_crawler.orchestration import should_fail_on_missing_price
+from agoda_crawler.orchestration import parse_detail_fields
+from main import parse_args
 
 
 def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
@@ -31,67 +30,20 @@ def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
     assert args.date_end == "2026-06-30"
     assert not hasattr(args, "nights")
     assert args.workers == 3
-    assert args.detail_workers == 2
     assert args.detail_concurrency == 2
     assert args.enrich_missing_only is True
     assert args.detail_timeout == 30000
     assert args.field_retry_timeout == 1500
     assert args.field_retry_count == 2
     assert args.detail_fields == "price_value,rating_text,review_count_text"
-    assert args.complete_mode is True
     assert args.max_scroll_rounds == 80
     assert args.stable_rounds == 3
     assert args.scroll_wait_ms == 1000
     assert args.print_records is False
 
 
-def test_has_missing_price_detects_incomplete_records() -> None:
-    assert has_missing_price([{"hotel_name": "A", "price_value": "1000"}]) is False
-    assert has_missing_price(
-        [{"hotel_name": "A", "hotel_url": "https://www.agoda.com/a/hotel/x.html", "price_value": None}]
-    ) is True
-    assert has_missing_price([{"hotel_name": "A", "hotel_url": None, "price_value": None}]) is False
-
-
-def test_coverage_gate_requires_full_unlimited_detail(monkeypatch) -> None:
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["main.py", "--enrich-details", "--max-detail-pages", "0"],
-    )
-    assert should_fail_on_missing_price(parse_args(env={})) is True
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["main.py", "--enrich-details", "--max-detail-pages", "2"],
-    )
-    assert should_fail_on_missing_price(parse_args(env={})) is False
-
-    monkeypatch.setattr(sys, "argv", ["main.py", "--no-enrich-details"])
-    assert should_fail_on_missing_price(parse_args(env={})) is False
-
-
-def test_annotate_record_keeps_source_location() -> None:
-    record = {"hotel_name": "A", "location_text": "Thang Tam, Vung Tau"}
-
-    annotated = annotate_record(record, "Vung Tau", "2026-06-10", "2026-06-11")
-
-    assert annotated["location_text"] == "Thang Tam, Vung Tau"
-    assert annotated["location_status"] == "source"
-
-
-def test_annotate_record_does_not_invent_location() -> None:
-    record = {"hotel_name": "A", "location_text": None}
-
-    annotated = annotate_record(record, "Vung Tau", "2026-06-10", "2026-06-11")
-
-    assert annotated["location_text"] is None
-    assert "location_status" not in annotated
-
-
 def test_parse_detail_fields_accepts_known_fields() -> None:
-    assert parse_detail_fields("price_value,location_text") == ("price_value", "location_text")
+    assert parse_detail_fields("price_value,star_rating_text") == ("price_value", "star_rating_text")
 
 
 def test_parse_detail_fields_rejects_unknown_fields() -> None:
@@ -101,6 +53,16 @@ def test_parse_detail_fields_rejects_unknown_fields() -> None:
         assert "bad_field" in str(exc)
     else:
         raise AssertionError("parse_detail_fields should reject unknown fields")
+
+
+def test_parse_detail_fields_rejects_removed_fields() -> None:
+    for field in ("location_text", "image_url"):
+        try:
+            parse_detail_fields(field)
+        except ValueError as exc:
+            assert field in str(exc)
+        else:
+            raise AssertionError(f"{field} should not be supported")
 
 
 def test_parse_args_can_disable_detail_enrichment(monkeypatch) -> None:
@@ -130,14 +92,12 @@ def test_parse_args_uses_env_defaults(monkeypatch) -> None:
             "AGODA_OUTPUT_DIR": "data/raw",
             "AGODA_ENRICH_DETAILS": "false",
             "AGODA_WORKERS": "3",
-            "AGODA_DETAIL_WORKERS": "4",
             "AGODA_DETAIL_CONCURRENCY": "3",
             "AGODA_DETAIL_TIMEOUT": "20000",
             "AGODA_FIELD_RETRY_TIMEOUT": "1200",
             "AGODA_FIELD_RETRY_COUNT": "1",
-            "AGODA_DETAIL_FIELDS": "price_value,location_text",
+            "AGODA_DETAIL_FIELDS": "price_value,star_rating_text",
             "AGODA_ENRICH_MISSING_ONLY": "false",
-            "AGODA_COMPLETE_MODE": "false",
             "AGODA_MAX_SCROLL_ROUNDS": "40",
             "AGODA_STABLE_ROUNDS": "5",
             "AGODA_SCROLL_WAIT_MS": "1500",
@@ -150,14 +110,12 @@ def test_parse_args_uses_env_defaults(monkeypatch) -> None:
     assert args.output_dir == "data/raw"
     assert args.enrich_details is False
     assert args.workers == 3
-    assert args.detail_workers == 4
     assert args.detail_concurrency == 3
     assert args.detail_timeout == 20000
     assert args.field_retry_timeout == 1200
     assert args.field_retry_count == 1
-    assert args.detail_fields == "price_value,location_text"
+    assert args.detail_fields == "price_value,star_rating_text"
     assert args.enrich_missing_only is False
-    assert args.complete_mode is False
     assert args.max_scroll_rounds == 40
     assert args.stable_rounds == 5
     assert args.scroll_wait_ms == 1500
@@ -196,6 +154,14 @@ def test_load_dotenv_reads_key_value_file(tmp_path) -> None:
     assert values["AGODA_DESTINATION"] == "Vung Tau"
     assert values["AGODA_MAX_PAGES"] == "2"
     assert values["AGODA_HEADLESS"] == "true"
+
+
+def test_load_config_env_rejects_unknown_agoda_key(tmp_path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("AGODA_WORKERSS=2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="AGODA_WORKERSS"):
+        load_config_env(str(env_path))
 
 
 def test_parse_destinations_splits_comma_separated_values() -> None:

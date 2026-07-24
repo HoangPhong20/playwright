@@ -7,7 +7,6 @@ from agoda_crawler.extraction import (
     _canonicalize_price_value,
     _price_value_from_text,
     _parse_star_rating,
-    _normalize_location_text,
     _record_key,
     _parse_textual_fallback,
 )
@@ -130,23 +129,20 @@ class _FastLinksPage:
             {
                 "href": "/vi-vn/demo/hotel/vung-tau-vn.html?cid=1",
                 "text": " Demo Hotel ",
-                "imageUrl": "/demo.jpg",
             },
             {
                 "href": "/vi-vn/demo/hotel/vung-tau-vn.html?cid=2",
                 "text": "Duplicate Demo Hotel",
-                "imageUrl": "",
             },
         ]
 
 
 def test_extract_fast_hotel_links_dedupes_by_hotel_url() -> None:
-    records = extract_fast_hotel_links(_FastLinksPage(), 1)
+    records = extract_fast_hotel_links(_FastLinksPage())
 
     assert len(records) == 1
     assert records[0]["hotel_name"] == "Demo Hotel"
     assert records[0]["hotel_url"] == "https://www.agoda.com/vi-vn/demo/hotel/vung-tau-vn.html?cid=1"
-    assert records[0]["image_url"] == "https://www.agoda.com/demo.jpg"
 
 
 class _FastLinksWithoutTextPage:
@@ -157,13 +153,12 @@ class _FastLinksWithoutTextPage:
             {
                 "href": "/vi-vn/the-song-vung-tau/hotel/vung-tau-vn.html?cid=1",
                 "text": "",
-                "imageUrl": "",
             },
         ]
 
 
 def test_extract_fast_hotel_links_keeps_urls_without_visible_text() -> None:
-    records = extract_fast_hotel_links(_FastLinksWithoutTextPage(), 1)
+    records = extract_fast_hotel_links(_FastLinksWithoutTextPage())
 
     assert len(records) == 1
     assert records[0]["hotel_name"] == "The Song Vung Tau"
@@ -187,9 +182,9 @@ def test_detail_text_parsers_handle_vietnamese_review_and_stars() -> None:
     assert _parse_star_rating(star) == "4 stars"
 
 
-def test_normalize_location_text_drops_repeated_ward_chunk() -> None:
+def test_textual_fallback_returns_empty_values_for_blank_text() -> None:
     raw = "252 Duong Ba Cu Phuong 3, Phường 3, Vung Tau, Viet Nam"
 
-    normalized = _normalize_location_text(raw)
+    parsed = _parse_textual_fallback("")
 
-    assert normalized == "252 Duong Ba Cu Phuong 3, Vung Tau, Viet Nam"
+    assert parsed["price_value"] is None

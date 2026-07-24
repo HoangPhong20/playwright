@@ -39,7 +39,6 @@ class _ListingPage:
                 ],
                 "name": "Demo Hotel",
                 "text": "Demo Hotel 8,7 Tuyet voi 123 nhan xet 500.000 ₫ Gia moi dem",
-                "imageUrl": "/demo.jpg",
                 "sourceSelector": '[data-selenium="hotel-item"]',
                 "outerHtmlPreview": "<div>Demo Hotel</div>",
             },
@@ -48,7 +47,6 @@ class _ListingPage:
                 "anchorHrefs": [],
                 "name": "No URL Hotel",
                 "text": "No URL Hotel card",
-                "imageUrl": "",
                 "sourceSelector": '[data-selenium="hotel-item"]',
                 "outerHtmlPreview": "<div>No URL Hotel card</div>",
             },
@@ -92,7 +90,6 @@ class _MissingPricePage:
                 "urls": ["https://www.agoda.com/vi-vn/no-price/hotel/vung-tau-vn.html"],
                 "name": "No Price Hotel",
                 "text": "No Price Hotel 8.5 Excellent 22 reviews",
-                "imageUrl": "",
             }
         ]
 
@@ -119,7 +116,6 @@ class _TextFallbackPage:
                 "urls": [],
                 "name": "",
                 "text": "Fallback Hotel 9.1 Exceptional 88 reviews Vung Tau",
-                "imageUrl": "/fallback.jpg",
             }
         ]
 
@@ -148,13 +144,11 @@ class _DistinctUrlPage:
                 "urls": ["https://www.agoda.com/vi-vn/alpha-hotel/hotel/vung-tau-vn.html?cid=1"],
                 "name": "Alpha Hotel",
                 "text": "Alpha Hotel",
-                "imageUrl": "",
             },
             {
                 "urls": ["https://www.agoda.com/vi-vn/beta-hotel/hotel/vung-tau-vn.html?cid=1"],
                 "name": "Beta Hotel",
                 "text": "Beta Hotel",
-                "imageUrl": "",
             },
         ]
 
@@ -179,7 +173,6 @@ class _EmbeddedUrlPage:
                     "urls": ["/vi-vn/embedded-hotel/hotel/vung-tau-vn.html?cid=1"],
                     "name": "",
                     "text": "",
-                    "imageUrl": "",
                     "dataSelenium": "embedded-state",
                     "dataTestId": "embedded-state",
                 }
@@ -217,7 +210,6 @@ class _DataAttributeUrlPage:
                 ],
                 "name": "Data Url Hotel",
                 "text": "Data Url Hotel",
-                "imageUrl": "",
                 "sourceSelector": '[data-testid="property-card"]',
             }
         ]
@@ -249,7 +241,6 @@ class _PropertyIdMergePage:
                 "anchorHrefs": [],
                 "name": "Lazy Hotel",
                 "text": "Mo Lazy Hotel trong the moi",
-                "imageUrl": "https://pix6.agoda.net/hotelImages/123/123.jpg",
                 "propertyId": "123",
                 "dataSelenium": "hotel-item",
                 "sourceSelector": '[data-selenium="hotel-item"]',
@@ -259,7 +250,6 @@ class _PropertyIdMergePage:
                 "anchorHrefs": ["/vi-vn/lazy-hotel/hotel/vung-tau-vn.html?cid=1"],
                 "name": "",
                 "text": "",
-                "imageUrl": "",
                 "propertyId": "123",
                 "sourceSelector": "hotel-anchor-closest",
             },
@@ -290,7 +280,6 @@ class _ImageSlidePage:
                 "anchorHrefs": [],
                 "name": "Phong nghi",
                 "text": "Phong nghi",
-                "imageUrl": "https://pix6.agoda.net/hotelImages/456/456.jpg",
                 "propertyId": "456",
                 "tagName": "LI",
                 "className": "aaa63-snap",
@@ -322,7 +311,6 @@ class _GenericAccommodationLabelPage:
                 "anchorHrefs": ["https://www.agoda.com/vi-vn/"],
                 "name": "Khách sạn + Nhà",
                 "text": "Khách sạn + Nhà",
-                "imageUrl": "",
                 "sourceSelector": 'div[data-selenium*="hotel" i]',
                 "dataSelenium": "hotel-filter",
             }

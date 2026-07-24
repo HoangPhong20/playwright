@@ -3,8 +3,6 @@ from urllib.parse import parse_qs, urlsplit
 
 from agoda_crawler.navigation import (
     _build_city_search_urls,
-    _with_landing_dates,
-    _with_search_page,
 )
 from agoda_crawler.navigation import search as navigation_search
 
@@ -43,59 +41,6 @@ def test_build_city_search_urls_includes_non_localized_and_en_us_fallbacks() -> 
     assert "/vi-vn/search" in paths
     assert "/search" in paths
     assert "/en-us/search" in paths
-
-
-def test_with_landing_dates_adds_occupancy_and_los() -> None:
-    url = _with_landing_dates(
-        "https://www.agoda.com/vi-vn/city/vung-tau-vn.html?cid=-1",
-        "2026-06-10",
-        "2026-06-12",
-    )
-
-    query = parse_qs(urlsplit(url).query, keep_blank_values=True)
-    assert query["cid"] == ["-1"]
-    assert query["checkIn"] == ["2026-06-10"]
-    assert query["checkOut"] == ["2026-06-12"]
-    assert query["los"] == ["2"]
-    assert query["rooms"] == ["1"]
-    assert query["adults"] == ["2"]
-    assert query["children"] == ["0"]
-
-
-def test_with_landing_dates_keeps_custom_occupancy() -> None:
-    url = _with_landing_dates(
-        "https://www.agoda.com/vi-vn/city/vung-tau-vn.html?cid=-1",
-        "2026-06-10",
-        "2026-06-12",
-        adults=3,
-        rooms=2,
-        children=1,
-    )
-
-    query = parse_qs(urlsplit(url).query, keep_blank_values=True)
-    assert query["rooms"] == ["2"]
-    assert query["adults"] == ["3"]
-    assert query["children"] == ["1"]
-
-
-def test_with_search_page_sets_page_on_search_url() -> None:
-    url = _with_search_page(
-        "https://www.agoda.com/vi-vn/search?city=17190&checkIn=2026-06-10",
-        2,
-    )
-
-    assert url is not None
-    query = parse_qs(urlsplit(url).query, keep_blank_values=True)
-    assert query["city"] == ["17190"]
-    assert query["checkIn"] == ["2026-06-10"]
-    assert query["page"] == ["2"]
-
-
-def test_with_search_page_rejects_non_search_url() -> None:
-    assert _with_search_page(
-        "https://www.agoda.com/vi-vn/city/vung-tau-vn.html?city=17190",
-        2,
-    ) is None
 
 
 def test_force_hotel_mode_continue_allows_missing_hotels_tab(monkeypatch, capsys) -> None:

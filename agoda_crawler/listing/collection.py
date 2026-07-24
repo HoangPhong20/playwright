@@ -15,7 +15,6 @@ from agoda_crawler.extraction import _empty_record
 from agoda_crawler.extraction.parsers import (
     hotel_url_key as _hotel_url_key,
     name_from_hotel_url as _name_from_hotel_url,
-    normalize_location_text as _normalize_location_text,
     parse_textual_fallback as _parse_textual_fallback,
 )
 from agoda_crawler.utils import compact_text
@@ -151,12 +150,11 @@ def collect_listing_snapshot(
         if not explicit_name:
             cards_without_name_count += 1
 
-        image_url = raw_card.get("imageUrl")
         property_id = _property_id(raw_card)
         property_key = f"property:{property_id}" if property_id else None
         if not normalized_urls:
             cards_without_url_count += 1
-            if not _has_hotel_signal(raw_card, name, raw_text, image_url):
+            if not _has_hotel_signal(raw_card, name, raw_text):
                 invalid_card_count += 1
                 if len(invalid_card_samples) < 25:
                     invalid_card_samples.append(_card_debug_sample(raw_card, name, raw_text))
@@ -174,9 +172,7 @@ def collect_listing_snapshot(
         else:
             record_key = _partial_record_key(
                 name=name,
-                location_text=_parse_textual_fallback(raw_text)["location_text"],
                 raw_text=raw_text,
-                image_url=image_url,
                 page_number=page_number,
                 card_index=card_index,
             )
@@ -188,7 +184,7 @@ def collect_listing_snapshot(
         if not name and hotel_url:
             name = _name_from_hotel_url(hotel_url)
 
-        record = _empty_record(name, hotel_url, page_number)
+        record = _empty_record(name, hotel_url)
         record["canonical_url"] = canonical_url
         record["collect_status"] = _collect_status(name, hotel_url)
         record["collect_error"] = None if record["collect_status"] == "ok" else record["collect_status"]
@@ -209,11 +205,6 @@ def collect_listing_snapshot(
         record["rating_text"] = parsed["rating_text"]
         record["review_count_text"] = parsed["review_count_text"]
         record["star_rating_text"] = parsed["star_rating_text"]
-        record["location_text"] = _normalize_location_text(parsed["location_text"])
-
-        if image_url:
-            record["image_url"] = urljoin(page.url, image_url)
-
         if raw_text and not hotel_url:
             record["listing_text_snippet"] = raw_text[:500]
             record["card_text_preview"] = raw_text[:300]
@@ -303,7 +294,6 @@ def _has_hotel_signal(
     raw_card: Dict,
     name: Optional[str],
     text: Optional[str],
-    image_url: Optional[str],
 ) -> bool:
     if _looks_like_non_hotel_dom(raw_card, name, text):
         return False
@@ -313,10 +303,6 @@ def _has_hotel_signal(
         for key in ("dataSelenium", "dataTestId")
     ).casefold()
     if any(token in data_attrs for token in ("hotel-item", "property-card", "search-result-card")):
-        return True
-
-    image = (compact_text(image_url) or "").casefold()
-    if "hotelimages" in image and _looks_like_property_container(raw_card):
         return True
 
     ascii_text = _ascii_text(text or "").casefold()
@@ -517,19 +503,14 @@ def _looks_like_non_name(value: str) -> bool:
 
 def _partial_record_key(
     name: Optional[str],
-    location_text: Optional[str],
     raw_text: Optional[str],
-    image_url: Optional[str],
     page_number: int,
     card_index: int,
 ) -> str:
     if name:
-        return (
-            "partial:"
-            f"{_identity_part(name)}|{_identity_part(location_text)}|page:{page_number}"
-        )
+        return f"partial:{_identity_part(name)}|page:{page_number}"
 
-    source = compact_text(raw_text) or compact_text(image_url) or str(card_index)
+    source = compact_text(raw_text) or str(card_index)
     digest = hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()[:16]
     return f"partial:{page_number}:{digest}:{card_index}"
 
@@ -591,7 +572,6 @@ def _evaluate_embedded_hotel_url_cards(page: Page) -> List[Dict]:
                     urls: [url],
                     name: '',
                     text: '',
-                    imageUrl: '',
                     imageAlt: '',
                     dataSelenium: 'embedded-state',
                     dataTestId: 'embedded-state',
@@ -774,7 +754,6 @@ def _evaluate_listing_dom(
                         ''
                     ).replace(/\\s+/g, ' ').trim();
                     const img = element.querySelector('img');
-                    const imageUrl = img ? (img.currentSrc || img.src || img.getAttribute('data-src') || '') : '';
                     const imageAlt = img ? (img.alt || img.title || img.getAttribute('aria-label') || '') : '';
                     const propertyId = firstAttribute(
                         element,
@@ -786,7 +765,6 @@ def _evaluate_listing_dom(
                         anchorHrefs: urlData.anchorHrefs,
                         name,
                         text,
-                        imageUrl,
                         imageAlt: (imageAlt || '').replace(/\\s+/g, ' ').trim(),
                         dataSelenium: element.getAttribute('data-selenium') || '',
                         dataTestId: element.getAttribute('data-testid') || '',

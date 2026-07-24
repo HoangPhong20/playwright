@@ -188,42 +188,6 @@ def canonicalize_price_value(value: Optional[str]) -> Optional[str]:
     return cleaned_amount
 
 
-def normalize_location_text(value: Optional[str]) -> Optional[str]:
-    if not value:
-        return None
-
-    text = compact_text(value)
-    if not text:
-        return None
-
-    parts = [compact_text(part) for part in re.split(r"\s*,\s*", text) if compact_text(part)]
-    if not parts:
-        return None
-
-    normalized_parts: list[str] = []
-    seen_keys: set[str] = set()
-    for part in parts:
-        key = ascii_text(part).lower()
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        normalized_parts.append(part)
-
-    if len(normalized_parts) >= 2:
-        head = normalized_parts[0]
-        tail = normalized_parts[1:]
-        head_key = ascii_text(head).lower()
-        filtered_tail: list[str] = []
-        for part in tail:
-            part_key = ascii_text(part).lower()
-            if part_key and part_key in head_key and len(part) < len(head):
-                continue
-            filtered_tail.append(part)
-        normalized_parts = [head] + filtered_tail
-
-    return ", ".join(normalized_parts)
-
-
 def hotel_url_key(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path.rstrip("/").lower()
@@ -237,18 +201,12 @@ def parse_textual_fallback(raw_text: Optional[str]) -> Dict[str, Optional[str]]:
             "rating_text": None,
             "review_count_text": None,
             "star_rating_text": None,
-            "location_text": None,
         }
 
     text = compact_text(raw_text) or ""
 
     rating_text = parse_review_score(text)
     star_match = re.search(r"\b(\d(?:\.\d)?)\s+stars?\s+out\s+of\s+5\b", text, flags=re.IGNORECASE)
-    location_match = re.search(
-        r"stars?\s+out\s+of\s+5\s+(.+?)\s+Per\s+night\b",
-        text,
-        flags=re.IGNORECASE,
-    )
     price_value = price_value_from_text(text)
 
     return {
@@ -256,7 +214,6 @@ def parse_textual_fallback(raw_text: Optional[str]) -> Dict[str, Optional[str]]:
         "rating_text": rating_text,
         "review_count_text": parse_review_count(text),
         "star_rating_text": (star_match.group(1) + " stars") if star_match else parse_star_rating(text),
-        "location_text": normalize_location_text(location_match.group(1)) if location_match else None,
     }
 
 

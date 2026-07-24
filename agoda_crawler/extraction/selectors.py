@@ -64,15 +64,6 @@ FIELD_SELECTORS = {
         '[class*="StarRating"]',
         '[aria-label*="star"]',
     ],
-    "location_text": [
-        '[data-selenium="area-city"]',
-        '[data-testid="address"]',
-        '[data-selenium="hotel-address"]',
-    ],
-    "image_url": [
-        "img",
-        "[data-testid='property-card-image'] img",
-    ],
 }
 
 COOKIE_BUTTON_SELECTORS = [

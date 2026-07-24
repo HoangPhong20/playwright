@@ -21,7 +21,6 @@ from agoda_crawler.jobs import (
 )
 from agoda_crawler.utils.logging import log, log_prefix
 from agoda_crawler.utils.run_output import (
-    has_missing_price,
     is_publishable_record,
     print_verification_summary,
     project_output_record,
@@ -38,7 +37,7 @@ DEFAULT_DATE_START = "2026-06-01"
 DEFAULT_DATE_END = "2026-06-30"
 DEFAULT_MAX_PAGES = 0
 DEFAULT_WORKERS = 3
-DEFAULT_DETAIL_WORKERS = 2
+DEFAULT_DETAIL_CONCURRENCY = 2
 DEFAULT_DETAIL_TIMEOUT = 30_000
 DEFAULT_FIELD_RETRY_TIMEOUT = 1_500
 DEFAULT_FIELD_RETRY_COUNT = 2
@@ -51,8 +50,6 @@ ALLOWED_DETAIL_FIELDS = {
     "rating_text",
     "review_count_text",
     "star_rating_text",
-    "location_text",
-    "image_url",
 }
 
 
@@ -78,10 +75,8 @@ def run_crawl_job_batch(
                     log("Job started")
                     records = crawl_agoda_search_with_browser(
                         browser,
-                        start_url=args.start_url or "",
                         max_pages=max(0, args.max_pages),
                         headless=args.headless,
-                        use_homepage_flow=args.use_homepage_flow,
                         destination=job.destination,
                         check_in=job.check_in,
                         check_out=job.check_out,
@@ -91,7 +86,7 @@ def run_crawl_job_batch(
                         locale=args.locale,
                         enrich_details=args.enrich_details,
                         max_detail_pages=args.max_detail_pages,
-                        detail_workers=max(1, args.detail_concurrency),
+                        detail_concurrency=max(1, args.detail_concurrency),
                         enrich_missing_only=args.enrich_missing_only,
                         detail_timeout=args.detail_timeout,
                         field_retry_timeout=max(0, args.field_retry_timeout),
@@ -112,7 +107,7 @@ def run_crawl_job_batch(
                     )
                     if args.print_records:
                         print(as_json(project_output_record(annotated)))
-                    if write_output:
+                    if write_output and is_publishable_record(annotated):
                         append_jsonl(job.output_path, project_output_record(annotated))
                     annotated_records.append(annotated)
                 results.append(CrawlJobResult(job=job, records=annotated_records))
@@ -172,12 +167,11 @@ def run_from_args(args) -> None:
     )
     print()
 
-    coverage_failed = False
     for check_in, check_out in stays:
         stay_started_at = datetime.now()
         stay_jobs = jobs_for_stay(jobs, check_in)
         worker_count = max(1, min(args.workers, len(stay_jobs)))
-        output_path = output_path_for_stay(args, check_in, len(stays))
+        output_path = output_path_for_stay(args, check_in)
         print(
             f"\nStay {check_in} -> {check_out}: "
             f"jobs={len(stay_jobs)} workers={worker_count} output={output_path}"
@@ -191,34 +185,20 @@ def run_from_args(args) -> None:
         ]
         write_latest_outputs(stay_records)
         public_records = [record for record in stay_records if is_publishable_record(record)]
+        discarded_records = [record for record in stay_records if not is_publishable_record(record)]
 
         print(f"\nStay {check_in} -> {check_out} complete")
         if len(public_records) != len(stay_records):
             print(
-                "Filtered incomplete records: "
+                "Discarded incomplete records: "
                 f"{len(stay_records) - len(public_records)} debug-only, "
                 f"{len(public_records)} publishable"
             )
         summarize(public_records)
         elapsed_seconds = int((datetime.now() - stay_started_at).total_seconds())
-        print_verification_summary(public_records, elapsed_seconds)
-        if has_missing_price(public_records):
-            if should_fail_on_missing_price(args):
-                coverage_failed = True
-            else:
-                print(
-                    "Coverage warning: missing price records present, "
-                    "but this run is partial/no-detail so the process will not fail."
-                )
+        print_verification_summary(public_records, elapsed_seconds, discarded_records)
         print(f"Saved JSONL: {output_path}\n")
-
-    if coverage_failed:
-        raise SystemExit("Coverage failed: at least one hotel is missing price_value. See debug/missing_price_records.json")
 
 
 def _job_log_prefix(job: CrawlJob) -> str:
     return f"{job.destination} {job.check_in}"
-
-
-def should_fail_on_missing_price(args) -> bool:
-    return bool(args.enrich_details and max(0, args.max_detail_pages) <= 0)

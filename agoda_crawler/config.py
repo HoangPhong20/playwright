@@ -9,10 +9,8 @@ DEFAULT_LOCALE = "vi-vn"
 ENV_PATH = ".env"
 
 CONFIG_ENV_KEYS = {
-    "AGODA_START_URL",
     "AGODA_MAX_PAGES",
     "AGODA_HEADLESS",
-    "AGODA_USE_HOMEPAGE_FLOW",
     "AGODA_DESTINATION",
     "AGODA_DESTINATIONS",
     "AGODA_CHECK_IN",
@@ -27,7 +25,6 @@ CONFIG_ENV_KEYS = {
     "AGODA_ENRICH_DETAILS",
     "AGODA_MAX_DETAIL_PAGES",
     "AGODA_WORKERS",
-    "AGODA_DETAIL_WORKERS",
     "AGODA_DETAIL_CONCURRENCY",
     "AGODA_DETAIL_TIMEOUT",
     "AGODA_DETAIL_FIELDS",
@@ -35,7 +32,7 @@ CONFIG_ENV_KEYS = {
     "AGODA_FIELD_RETRY_COUNT",
     "AGODA_DETAIL_PROGRESS_INTERVAL",
     "AGODA_ENRICH_MISSING_ONLY",
-    "AGODA_COMPLETE_MODE",
+    "AGODA_MIN_OPTIONAL_COVERAGE",
     "AGODA_MAX_SCROLL_ROUNDS",
     "AGODA_STABLE_ROUNDS",
     "AGODA_SCROLL_WAIT_MS",
@@ -56,9 +53,6 @@ CONFIG_ENV_KEYS = {
     "AGODA_CARDS_TIMEOUT_RETRY",
     "AGODA_URL_FALLBACK_CARDS_TIMEOUT",
     "AGODA_SEARCH_ATTEMPTS",
-    "AGODA_SCROLL_PAUSE",
-    "AGODA_PAGE_SCROLL_ROUNDS",
-    "AGODA_PAGE_STABLE_ROUNDS",
     "AGODA_MIN_PAGE_HOTELS_BEFORE_STABLE",
     "AGODA_MIN_PAGE_HOTELS_BEFORE_TIME_CAP",
     "AGODA_MAX_LISTING_PAGE_SECONDS",
@@ -105,6 +99,11 @@ def load_dotenv(path: str = ENV_PATH) -> Dict[str, str]:
 
 def load_config_env(path: str = ENV_PATH) -> Dict[str, str]:
     values = load_dotenv(path)
+    unknown_keys = sorted(
+        key for key in values if key.startswith("AGODA_") and key not in CONFIG_ENV_KEYS
+    )
+    if unknown_keys:
+        raise ValueError(f"Unsupported .env configuration key(s): {', '.join(unknown_keys)}")
     for key in CONFIG_ENV_KEYS:
         if key in os.environ:
             values[key] = os.environ[key]
@@ -127,6 +126,16 @@ def env_bool(env: Dict[str, str], key: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     raise ValueError(f"{key} must be a boolean value: {value}")
+
+
+def env_float(env: Dict[str, str], key: str, default: float) -> float:
+    value = env.get(key)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"{key} must be a number: {value}") from exc
 
 
 def env_csv(env: Dict[str, str], key: str, default: str) -> tuple[str, ...]:
@@ -160,9 +169,12 @@ CARDS_TIMEOUT_RETRY = env_int(_ENV, "AGODA_CARDS_TIMEOUT_RETRY", 20_000)
 URL_FALLBACK_CARDS_TIMEOUT = env_int(_ENV, "AGODA_URL_FALLBACK_CARDS_TIMEOUT", 30_000)
 SEARCH_ATTEMPTS = env_int(_ENV, "AGODA_SEARCH_ATTEMPTS", 2)
 
-SCROLL_PAUSE = env_int(_ENV, "AGODA_SCROLL_PAUSE", 350)
-PAGE_SCROLL_ROUNDS = env_int(_ENV, "AGODA_PAGE_SCROLL_ROUNDS", 50)
-PAGE_STABLE_ROUNDS = env_int(_ENV, "AGODA_PAGE_STABLE_ROUNDS", 6)
+MAX_SCROLL_ROUNDS = env_int(_ENV, "AGODA_MAX_SCROLL_ROUNDS", 80)
+STABLE_ROUNDS = env_int(_ENV, "AGODA_STABLE_ROUNDS", 3)
+SCROLL_WAIT_MS = env_int(_ENV, "AGODA_SCROLL_WAIT_MS", 1_000)
+MIN_OPTIONAL_COVERAGE = env_float(_ENV, "AGODA_MIN_OPTIONAL_COVERAGE", 90.0)
+if not 0 <= MIN_OPTIONAL_COVERAGE <= 100:
+    raise ValueError("AGODA_MIN_OPTIONAL_COVERAGE must be between 0 and 100")
 MIN_PAGE_HOTELS_BEFORE_STABLE = env_int(_ENV, "AGODA_MIN_PAGE_HOTELS_BEFORE_STABLE", 100)
 MIN_PAGE_HOTELS_BEFORE_TIME_CAP = env_int(_ENV, "AGODA_MIN_PAGE_HOTELS_BEFORE_TIME_CAP", 60)
 MAX_LISTING_PAGE_SECONDS = env_int(_ENV, "AGODA_MAX_LISTING_PAGE_SECONDS", 240)

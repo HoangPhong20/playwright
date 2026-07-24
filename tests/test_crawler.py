@@ -92,8 +92,6 @@ def test_needs_detail_enrichment_skips_when_only_non_price_field_missing() -> No
         "rating_text": "8.7",
         "review_count_text": "100 reviews",
         "star_rating_text": "4 stars",
-        "location_text": None,
-        "image_url": "https://img.example/demo.jpg",
     }
 
     assert _needs_detail_enrichment(record, enrich_missing_only=True) is False
@@ -106,8 +104,6 @@ def test_needs_detail_enrichment_uses_rating_as_required_default() -> None:
         "rating_text": None,
         "review_count_text": "22",
         "star_rating_text": None,
-        "location_text": None,
-        "image_url": None,
     }
 
     assert _needs_detail_enrichment(record, enrich_missing_only=True) is True
@@ -121,29 +117,25 @@ def test_needs_detail_enrichment_when_price_missing() -> None:
         "rating_text": "8.7",
         "review_count_text": "100 reviews",
         "star_rating_text": "4 stars",
-        "location_text": "Vung Tau",
-        "image_url": "https://img.example/demo.jpg",
     }
 
     assert _needs_detail_enrichment(record, enrich_missing_only=True) is True
 
 
-def test_needs_detail_enrichment_when_configured_location_missing() -> None:
+def test_needs_detail_enrichment_when_configured_star_rating_missing() -> None:
     record = {
         "hotel_name": "Demo Hotel",
         "hotel_url": "https://www.agoda.com/demo/hotel/vung-tau-vn.html",
         "price_value": "1000",
         "rating_text": "8.7",
         "review_count_text": "100 reviews",
-        "star_rating_text": "4 stars",
-        "location_text": None,
-        "image_url": "https://img.example/demo.jpg",
+        "star_rating_text": None,
     }
 
     assert _needs_detail_enrichment(
         record,
         enrich_missing_only=True,
-        detail_fields=("price_value", "location_text"),
+        detail_fields=("price_value", "star_rating_text"),
     ) is True
 
 

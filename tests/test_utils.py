@@ -3,7 +3,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 from agoda_crawler.utils import append_jsonl
 from agoda_crawler.utils.logging import log_ignored_error, log_prefix
-from agoda_crawler.utils.run_output import print_verification_summary, project_output_record
+from agoda_crawler.utils.run_output import (
+    is_publishable_record,
+    optional_coverage_status,
+    print_verification_summary,
+    project_output_record,
+)
 
 
 def test_append_jsonl_is_thread_safe(tmp_path) -> None:
@@ -36,8 +41,6 @@ def test_project_output_record_removes_debug_fields() -> None:
         "rating_text": "8.5",
         "review_count_text": "120",
         "star_rating_text": "4 stars",
-        "location_text": "Vung Tau",
-        "image_url": "https://images.example/demo.jpg",
         "crawled_at": "2026-06-03T00:00:00+00:00",
         "destination": "Vung Tau",
         "normalized_destination": "Vung Tau",
@@ -59,8 +62,6 @@ def test_project_output_record_removes_debug_fields() -> None:
         "rating_text",
         "review_count_text",
         "star_rating_text",
-        "location_text",
-        "image_url",
         "crawled_at",
         "destination",
         "normalized_destination",
@@ -72,6 +73,43 @@ def test_project_output_record_removes_debug_fields() -> None:
     assert "_listing_scroll_round" not in output
     assert "_pagination" not in output
     assert "_timing" not in output
+
+
+def test_only_name_url_and_price_are_required_for_public_output() -> None:
+    record = {
+        "hotel_name": "Demo Hotel",
+        "hotel_url": "https://www.agoda.com/demo/hotel/demo.html",
+        "price_value": "1000000",
+    }
+
+    assert is_publishable_record(record) is True
+    for required_field in ("hotel_name", "hotel_url", "price_value"):
+        incomplete = dict(record)
+        incomplete[required_field] = None
+        assert is_publishable_record(incomplete) is False
+
+
+def test_optional_coverage_requires_strictly_more_than_threshold() -> None:
+    records = [
+        {
+            "hotel_name": f"Hotel {index}",
+            "hotel_url": f"https://www.agoda.com/hotel/{index}.html",
+            "price_value": "1000000",
+            "rating_text": "8.5" if index < 9 else None,
+            "review_count_text": "120" if index < 9 else None,
+            "star_rating_text": "4 stars" if index < 9 else None,
+        }
+        for index in range(10)
+    ]
+
+    status, coverage = optional_coverage_status(records, minimum_coverage=90.0)
+
+    assert coverage == {
+        "rating_text": 90.0,
+        "review_count_text": 90.0,
+        "star_rating_text": 90.0,
+    }
+    assert status == "warning"
 
 
 def test_verification_summary_labels_unlimited_pages_as_all(capsys) -> None:
@@ -89,7 +127,14 @@ def test_verification_summary_labels_unlimited_pages_as_all(capsys) -> None:
         }
     ]
 
-    print_verification_summary(records, elapsed_seconds=10)
+    print_verification_summary(
+        records,
+        elapsed_seconds=10,
+        discarded_records=[{"hotel_name": None, "missing_required_fields": ["hotel_name"]}],
+    )
 
     captured = capsys.readouterr()
     assert "- pages=2/all duplicate=1" in captured.out
+    assert "VERIFY_OPTIONAL_COVERAGE_STATUS=warning" in captured.out
+    assert "VERIFY_DISCARDED_RECORDS=1" in captured.out
+    assert "VERIFY_COVERAGE_STATUS=warning" in captured.out

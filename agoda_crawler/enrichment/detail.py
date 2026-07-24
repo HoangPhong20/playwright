@@ -26,8 +26,6 @@ DETAIL_ENRICH_FIELDS = (
     "rating_text",
     "review_count_text",
     "star_rating_text",
-    "location_text",
-    "image_url",
 )
 DEFAULT_DETAIL_ENRICH_FIELDS = ("price_value", "rating_text", "review_count_text")
 
@@ -47,7 +45,7 @@ def enrich_records_from_details(
     rooms: int,
     children: int,
     max_detail_pages: int,
-    detail_workers: int = 1,
+    detail_concurrency: int = 1,
     headless: bool = True,
     locale: str = "vi-vn",
     enrich_missing_only: bool = True,
@@ -80,7 +78,7 @@ def enrich_records_from_details(
             record["enrich_status"] = "skipped"
             record["enrich_error"] = None
 
-    worker_count = max(1, min(detail_workers, len(candidates)))
+    worker_count = max(1, min(detail_concurrency, len(candidates)))
     if worker_count == 1:
         enrich_records_from_details_serial(
             context,
@@ -108,7 +106,7 @@ def enrich_records_from_details(
         rooms=rooms,
         children=children,
         total_label=total_label,
-        detail_workers=worker_count,
+        detail_concurrency=worker_count,
         headless=headless,
         locale=locale,
         detail_timeout=detail_timeout,
@@ -127,7 +125,7 @@ def enrich_records_from_details_parallel(
     rooms: int,
     children: int,
     total_label: str,
-    detail_workers: int,
+    detail_concurrency: int,
     headless: bool,
     locale: str,
     detail_timeout: int,
@@ -145,9 +143,9 @@ def enrich_records_from_details_parallel(
         "last_log_at": time.perf_counter(),
     }
     progress_lock = threading.Lock()
-    chunks = chunk_records(candidates, detail_workers)
+    chunks = chunk_records(candidates, detail_concurrency)
 
-    with ThreadPoolExecutor(max_workers=detail_workers) as executor:
+    with ThreadPoolExecutor(max_workers=detail_concurrency) as executor:
         futures = [
             executor.submit(
                 enrich_detail_record_batch,

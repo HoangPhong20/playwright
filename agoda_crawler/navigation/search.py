@@ -17,9 +17,7 @@ from agoda_crawler.navigation.urls import (
     search_page_urls as _search_page_urls,
     search_url_label as _search_url_label,
     url_targets_page as _url_targets_page,
-    with_landing_dates as _with_landing_dates,
     with_search_dates as _with_search_dates,
-    with_search_page as _with_search_page,
     city_search_url_bases as _city_search_url_bases,
 )
 from agoda_crawler.utils.page_helpers import handle_cookie_popup, wait_for_cards
@@ -406,35 +404,6 @@ def _force_hotel_mode_or_continue(page: Page) -> None:
         if "Cannot find Hotels tab" not in str(exc):
             raise
         log("Search: Hotels tab not found; trying city landing fallback")
-
-
-def _run_city_landing_page_fallback(
-    page: Page,
-    destination: str,
-    check_in: str,
-    check_out: str,
-    adults: int = 2,
-    rooms: int = 1,
-    children: int = 0,
-) -> None:
-    _open_homepage(page)
-    handle_cookie_popup(page)
-    _force_hotel_mode(page)
-    _click_destination_landing_card(page, destination)
-    handle_cookie_popup(page)
-
-    dated_url = _with_landing_dates(
-        page.url,
-        check_in,
-        check_out,
-        adults=adults,
-        rooms=rooms,
-        children=children,
-    )
-    if dated_url != page.url:
-        log("Search: applying dates")
-        page.goto(dated_url, wait_until="domcontentloaded", timeout=LOAD_PAGE)
-        _wait_until_stable(page)
 
 
 def _open_homepage(page: Page) -> None:

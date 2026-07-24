@@ -21,13 +21,12 @@ def record_key(record: Dict) -> str:
         return f"property:{property_id}"
 
     name = (record.get("hotel_name") or "").strip().casefold()
-    location = (record.get("location_text") or "").strip().casefold()
     if name:
-        return f"partial:{name}|{location}"
+        return f"partial:{name}"
 
     page_number = record.get("_listing_page") or 0
     source_card_index = record.get("source_card_index")
-    snippet = (record.get("listing_text_snippet") or record.get("image_url") or "").strip().casefold()
+    snippet = (record.get("listing_text_snippet") or "").strip().casefold()
     return f"partial:{page_number}:{source_card_index}:{snippet[:120]}"
 
 
@@ -61,8 +60,7 @@ def partial_identity_key(record: Dict) -> Optional[str]:
     if not record.get("hotel_name"):
         return None
     name = (record.get("hotel_name") or "").strip().casefold()
-    location = (record.get("location_text") or "").strip().casefold()
-    return f"partial:{name}|{location}"
+    return f"partial:{name}"
 
 
 def property_identity_key(record: Dict) -> Optional[str]:

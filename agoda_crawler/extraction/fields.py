@@ -15,7 +15,6 @@ from agoda_crawler.extraction.parsers import (
     canonicalize_price_value as _canonicalize_price_value,
     hotel_url_key as _hotel_url_key,
     name_from_hotel_url as _name_from_hotel_url,
-    normalize_location_text as _normalize_location_text,
     parse_review_count as _parse_review_count,
     parse_review_score as _parse_review_score,
     parse_star_rating as _parse_star_rating,
@@ -75,28 +74,11 @@ def first_attr(root, selectors: List[str], attr: str) -> Optional[str]:
     return None
 
 
-def first_image_src(root, selectors: List[str], base_url: str) -> Optional[str]:
-    for selector in selectors:
-        locator = root.locator(selector).first
-        try:
-            if locator.count() == 0:
-                continue
-            src = (
-                locator.get_attribute("src", timeout=CLICK_DEFAULT)
-                or locator.get_attribute("data-src", timeout=CLICK_DEFAULT)
-            )
-        except Exception:
-            continue
-        if src:
-            return urljoin(base_url, src)
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Card-level extraction
 # ---------------------------------------------------------------------------
 
-def _extract_card(card, page_url: str, page_number: int) -> Optional[Dict]:
+def _extract_card(card, page_url: str) -> Optional[Dict]:
     """Extract one hotel record from a listing-card locator. Returns None if no name found."""
     hotel_name = (
         first_text(card, FIELD_SELECTORS["hotel_name"])
@@ -117,7 +99,6 @@ def _extract_card(card, page_url: str, page_number: int) -> Optional[Dict]:
     rating_text = first_text(card, FIELD_SELECTORS["rating_text"]) or parsed["rating_text"]
     review_count_text = first_text(card, FIELD_SELECTORS["review_count_text"]) or parsed["review_count_text"]
     star_rating_text = first_text(card, FIELD_SELECTORS["star_rating_text"]) or parsed["star_rating_text"]
-    location_text = _normalize_location_text(first_text(card, FIELD_SELECTORS["location_text"]) or parsed["location_text"])
 
     return {
         "hotel_name": hotel_name,
@@ -126,13 +107,11 @@ def _extract_card(card, page_url: str, page_number: int) -> Optional[Dict]:
         "rating_text": rating_text,
         "review_count_text": review_count_text,
         "star_rating_text": star_rating_text,
-        "location_text": location_text,
-        "image_url": first_image_src(card, FIELD_SELECTORS["image_url"], page_url),
         "crawled_at": utc_now_iso(),
     }
 
 
-def _empty_record(name: Optional[str], url: Optional[str], page_number: int) -> Dict:
+def _empty_record(name: Optional[str], url: Optional[str]) -> Dict:
     """Minimal record used by the link-based fallback extractor."""
     return {
         "hotel_name": name,
@@ -141,13 +120,11 @@ def _empty_record(name: Optional[str], url: Optional[str], page_number: int) -> 
         "rating_text": None,
         "review_count_text": None,
         "star_rating_text": None,
-        "location_text": None,
-        "image_url": None,
         "crawled_at": utc_now_iso(),
     }
 
 
-def extract_fast_hotel_links(page: Page, page_number: int) -> List[Dict]:
+def extract_fast_hotel_links(page: Page) -> List[Dict]:
     """
     Fast DOM-level collector for scroll rounds.
 
@@ -168,10 +145,7 @@ def extract_fast_hotel_links(page: Page, page_number: int) -> List[Dict]:
                         anchor.getAttribute("title") ||
                         ""
                     ).replace(/\\s+/g, " ").trim();
-                    const container = anchor.closest("article, li, div");
-                    const img = container ? container.querySelector("img") : null;
-                    const imageUrl = img ? (img.currentSrc || img.src || img.getAttribute("data-src") || "") : "";
-                    return { href, text, imageUrl };
+                    return { href, text };
                 })
                 .filter((row) => row.href)
             """
@@ -190,8 +164,7 @@ def extract_fast_hotel_links(page: Page, page_number: int) -> List[Dict]:
 
         name = compact_text(row.get("text")) or _name_from_hotel_url(hotel_url)
 
-        record = _empty_record(name, hotel_url, page_number)
-        record["image_url"] = urljoin(page.url, row["imageUrl"]) if row.get("imageUrl") else None
+        record = _empty_record(name, hotel_url)
         results.append(record)
 
     return results
@@ -201,18 +174,18 @@ def extract_fast_hotel_links(page: Page, page_number: int) -> List[Dict]:
 # Page-level extraction
 # ---------------------------------------------------------------------------
 
-def extract_from_cards(page: Page, card_selector: str, page_number: int) -> List[Dict]:
+def extract_from_cards(page: Page, card_selector: str) -> List[Dict]:
     """Extract all hotel records from listing cards on the current page."""
     cards = page.locator(card_selector)
     results = []
     for idx in range(cards.count()):
-        record = _extract_card(cards.nth(idx), page.url, page_number)
+        record = _extract_card(cards.nth(idx), page.url)
         if record:
             results.append(record)
     return results
 
 
-def extract_from_hotel_links(page: Page, page_number: int) -> List[Dict]:
+def extract_from_hotel_links(page: Page) -> List[Dict]:
     """
     Fallback extractor: collect hotel links when card selectors yield nothing.
     Attempts to enrich fields from the nearest parent container.
@@ -248,7 +221,7 @@ def extract_from_hotel_links(page: Page, page_number: int) -> List[Dict]:
             continue
 
         if "/city/" in page.url:
-            results.append(_empty_record(name, hotel_url, page_number))
+            results.append(_empty_record(name, hotel_url))
             continue
 
         container = a.locator("xpath=ancestor::article[1]").first
@@ -256,7 +229,7 @@ def extract_from_hotel_links(page: Page, page_number: int) -> List[Dict]:
             container = a.locator("xpath=ancestor::*[self::div or self::li][1]").first
 
         if container.count() == 0:
-            results.append(_empty_record(name, hotel_url, page_number))
+            results.append(_empty_record(name, hotel_url))
             continue
 
         try:
@@ -277,8 +250,6 @@ def extract_from_hotel_links(page: Page, page_number: int) -> List[Dict]:
             "rating_text": first_text(container, FIELD_SELECTORS["rating_text"]) or parsed["rating_text"],
             "review_count_text": first_text(container, FIELD_SELECTORS["review_count_text"]) or parsed["review_count_text"],
             "star_rating_text": first_text(container, FIELD_SELECTORS["star_rating_text"]) or parsed["star_rating_text"],
-            "location_text": _normalize_location_text(first_text(container, FIELD_SELECTORS["location_text"]) or parsed["location_text"]),
-            "image_url": first_image_src(container, FIELD_SELECTORS["image_url"], page.url),
             "crawled_at": utc_now_iso(),
         }
         results.append(record)
@@ -289,15 +260,6 @@ def extract_from_hotel_links(page: Page, page_number: int) -> List[Dict]:
 def extract_detail_fields(page: Page) -> Dict[str, Optional[str]]:
     """Extract fields available on an Agoda hotel detail page."""
     name = first_text(page, ["h1", '[data-selenium="hotel-name"]'])
-    location = _normalize_location_text(first_text(
-        page,
-        [
-            '[data-selenium="hotel-address-map"]',
-            '[data-testid*="address"]',
-            '[class*="Address"]',
-        ],
-    ))
-
     review_text = first_text(
         page,
         [
@@ -323,7 +285,6 @@ def extract_detail_fields(page: Page) -> Dict[str, Optional[str]]:
     except Exception:
         pass
 
-    image_url = _first_detail_image(page)
     rating_text = _parse_review_score(review_text or raw_text)
 
     price_value = _price_value_from_text(display_price_raw or "") or _price_value_from_text(raw_text)
@@ -334,47 +295,18 @@ def extract_detail_fields(page: Page) -> Dict[str, Optional[str]]:
         "rating_text": rating_text,
         "review_count_text": _parse_review_count(review_text or raw_text),
         "star_rating_text": _parse_star_rating(star_text or raw_text),
-        "location_text": location,
-        "image_url": image_url,
     }
 
 
-def _first_detail_image(page: Page) -> Optional[str]:
-    images = page.locator("img")
-    try:
-        count = min(images.count(), 80)
-    except Exception:
-        return None
-
-    fallback: Optional[str] = None
-    for idx in range(count):
-        img = images.nth(idx)
-        try:
-            src = img.get_attribute("src", timeout=1000) or img.get_attribute("data-src", timeout=1000)
-        except Exception:
-            continue
-        if not src:
-            continue
-        src = urljoin(page.url, src)
-        lowered = src.lower()
-        if "logo" in lowered or "flag" in lowered:
-            continue
-        if "hotelimages" in lowered:
-            return src
-        if fallback is None and ("pix" in lowered or "agoda.net" in lowered):
-            fallback = src
-    return fallback
-
-
-def extract_page_results(page: Page, card_selector: str, page_number: int) -> List[Dict]:
+def extract_page_results(page: Page, card_selector: str) -> List[Dict]:
     """Extract from listing cards and supplement with distinct hotel links."""
     merged: Dict[str, Dict] = {}
 
     if not _looks_like_city_landing_shell(page, card_selector):
-        for record in extract_from_cards(page, card_selector, page_number):
+        for record in extract_from_cards(page, card_selector):
             merged[_record_key(record)] = record
 
-    for record in extract_from_hotel_links(page, page_number):
+    for record in extract_from_hotel_links(page):
         key = _record_key(record)
         existing = merged.get(key)
         if existing is None:

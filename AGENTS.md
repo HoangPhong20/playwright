@@ -39,7 +39,7 @@ Use PowerShell from the repository root.
 
 Runtime examples:
 
-Use `.env` defaults for 3 cities, all pages, full detail:
+Use the runtime defaults for 3 cities, all pages, full detail:
 
 ```powershell
 python main.py --date-start 2026-06-10 --date-end 2026-06-10
@@ -62,15 +62,16 @@ python main.py --date-start 2026-06-10 --date-end 2026-06-10 `
 
 ## Current Runtime Defaults
 
-The checked-in `.env` is tuned for full detail first, speed second:
+The checked-in `.env` uses headless mode with 2 outer workers and detail concurrency 3:
 
 - `AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang`
 - `AGODA_MAX_PAGES=0`
 - `AGODA_HEADLESS=true`
 - `AGODA_ENRICH_DETAILS=true`
 - `AGODA_MAX_DETAIL_PAGES=0`
-- `AGODA_WORKERS=3`
+- `AGODA_WORKERS=2`
 - `AGODA_DETAIL_CONCURRENCY=3`
+- `AGODA_MIN_OPTIONAL_COVERAGE=90`
 - `AGODA_OUTPUT_DIR=data/raw`
 - `AGODA_BLOCK_RESOURCE_TYPES=image,font,media`
 - `AGODA_BLOCK_URL_KEYWORDS=googletagmanager,google-analytics,doubleclick,facebook,hotjar,clarity,taboola`
@@ -79,8 +80,7 @@ The checked-in `.env` is tuned for full detail first, speed second:
 Listing collection merges records during each scroll round. JSONL output is
 still written after the job completes detail enrichment.
 Network routing blocks non-essential resources per context; keep it configurable
-because image blocking can affect live `image_url` coverage if Agoda changes lazy
-loading behavior.
+because site resource-loading behavior can change over time.
 
 ## Coding Style
 
@@ -105,9 +105,10 @@ loading behavior.
 - Treat `data/` and `debug/` as transient runtime artifacts.
 - Do not commit credentials, cookies, personally identifiable scrape output, or large binary diagnostics.
 - Debug files such as `debug/missing_price_records.json`,
-  `debug/partial_missing_url_records.json`, `debug/pagination_errors/`, and
+  `debug/partial_missing_url_records.json`, `debug/discarded_records.json`, `debug/pagination_errors/`, and
   `debug/listing_errors/` are for investigation, not stable fixtures unless
   explicitly curated.
+- Public JSONL requires `hotel_name`, `hotel_url`, and `price_value`. Missing optional rating/review/star fields are retained; their coverage is warning-only when it does not exceed the configured threshold.
 
 ## Commit And PR Notes
 
