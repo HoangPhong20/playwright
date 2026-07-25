@@ -29,6 +29,10 @@ OUTPUT_RECORD_FIELDS = (
     "normalized_destination",
     "check_in",
     "check_out",
+    "batch_id",
+    "airflow_dag_id",
+    "airflow_run_id",
+    "airflow_try_number",
 )
 REQUIRED_OUTPUT_FIELDS = (
     "hotel_name",

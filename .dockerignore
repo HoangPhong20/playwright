@@ -11,6 +11,8 @@ htmlcov/
 data/
 debug/
 .env
+airflow/.env
+airflow/logs/
 docs/
 AGENTS.md
 README.md

@@ -75,7 +75,6 @@ NON_HOTEL_MODE_TEXT = re.compile(
     re.I,
 )
 
-
 # UI flow diagram:
 # 1. Open Agoda homepage and wait until the shell is interactive.
 # 2. Force hotel mode by clicking the Hotels tab before touching the search box.
@@ -558,7 +557,6 @@ def _open_ui_derived_city_search_url(
             log(f"Search URL {idx}/{len(candidates)} no cards, trying next ({str(exc).splitlines()[0]})")
 
     raise RuntimeError("No UI-derived city search URL produced hotel results") from last_error
-
 
 def _find_destination_input(page: Page, timeout_ms: int) -> Optional[Locator]:
     deadline = time.time() + timeout_ms / 1000.0

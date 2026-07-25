@@ -5,7 +5,6 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional
-from uuid import uuid4
 
 from playwright.sync_api import sync_playwright
 
@@ -23,6 +22,7 @@ from agoda_crawler.jobs import (
     parse_date,
     parse_destinations,
 )
+from agoda_crawler.run_context import RunContext, run_context_from_args
 from agoda_crawler.utils.debug_artifacts import debug_run_context
 from agoda_crawler.utils.logging import log, log_prefix
 from agoda_crawler.utils.run_output import (
@@ -37,10 +37,10 @@ from agoda_crawler.utils import append_jsonl, as_json
 
 
 DEFAULT_DESTINATION = "Vung Tau"
-DEFAULT_DESTINATIONS = "Vung Tau,Da Nang,Nha Trang"
+DEFAULT_DESTINATIONS = "Vung Tau,Da Nang,Nha Trang,Ho Chi Minh"
 DEFAULT_DATE_START = "2026-06-01"
 DEFAULT_DATE_END = "2026-06-30"
-DEFAULT_MAX_PAGES = 10
+DEFAULT_MAX_PAGES = 5
 DEFAULT_WORKERS = 3
 DEFAULT_DETAIL_CONCURRENCY = 2
 DEFAULT_TOTAL_DETAIL_CONCURRENCY = 3
@@ -71,16 +71,18 @@ def run_crawl_job_batch(
     jobs: List[CrawlJob],
     args,
     write_output: bool = True,
-    run_id: str = "adhoc",
+    run_context: Optional[RunContext] = None,
     detail_worker_semaphore: Optional[threading.BoundedSemaphore] = None,
 ) -> List[CrawlJobResult]:
+    if run_context is None:
+        raise ValueError("run_context is required")
     results: List[CrawlJobResult] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless)
         try:
             for job in jobs:
                 with log_prefix(_job_log_prefix(job)), debug_run_context(
-                    run_id,
+                    run_context.path_batch_id,
                     job.destination,
                     job.check_in,
                 ):
@@ -118,6 +120,7 @@ def run_crawl_job_batch(
                         job.check_in,
                         job.check_out,
                     )
+                    annotated.update(run_context.record_metadata())
                     if args.print_records:
                         print(as_json(project_output_record(annotated)))
                     if write_output and is_publishable_record(annotated):
@@ -133,7 +136,7 @@ def run_crawl_jobs_for_stay(
     jobs: List[CrawlJob],
     args,
     worker_count: int,
-    run_id: str,
+    run_context: RunContext,
     detail_worker_semaphore: threading.BoundedSemaphore,
 ) -> List[CrawlJobResult]:
     if worker_count == 1:
@@ -141,7 +144,7 @@ def run_crawl_jobs_for_stay(
             jobs,
             args,
             write_output=False,
-            run_id=run_id,
+            run_context=run_context,
             detail_worker_semaphore=detail_worker_semaphore,
         )
     else:
@@ -154,7 +157,7 @@ def run_crawl_jobs_for_stay(
                     batch,
                     args,
                     False,
-                    run_id,
+                    run_context,
                     detail_worker_semaphore,
                 )
                 for batch in batches
@@ -170,12 +173,12 @@ def run_crawl_jobs_for_stay(
 def run_from_args(args) -> None:
     destinations = parse_destinations(args.destinations, args.destination)
     stays = iter_stays(args)
-    run_id = _new_run_id()
-    run_output_dir = Path(args.output_dir) / run_id
+    run_context = run_context_from_args(args)
+    run_output_dir = run_context.output_directory(args.output_dir)
     run_output_dir.mkdir(parents=True, exist_ok=True)
     jobs = build_crawl_jobs(args, destinations, stays, output_dir=run_output_dir)
     manifest_path = run_output_dir / "run_manifest.json"
-    manifest = _new_run_manifest(run_id, args, destinations, stays)
+    manifest = _new_run_manifest(run_context, args, destinations, stays)
     _write_run_manifest(manifest_path, manifest)
     detail_worker_semaphore = threading.BoundedSemaphore(
         max(1, args.total_detail_concurrency)
@@ -200,7 +203,8 @@ def run_from_args(args) -> None:
     )
     print(
         "Output: "
-        f"run_id={run_id} dir={run_output_dir} enrich={args.enrich_details} "
+        f"batch_id={run_context.batch_id} attempt={run_context.airflow_try_number} "
+        f"dir={run_output_dir} enrich={args.enrich_details} "
         f"missing_only={args.enrich_missing_only} detail_fields={args.detail_fields}"
     )
     print()
@@ -219,7 +223,7 @@ def run_from_args(args) -> None:
             stay_jobs,
             args,
             worker_count,
-            run_id,
+            run_context,
             detail_worker_semaphore,
         )
         stay_records = [
@@ -229,7 +233,7 @@ def run_from_args(args) -> None:
         ]
         write_latest_outputs(
             stay_records,
-            debug_dir=Path("debug") / run_id / "summary" / check_in,
+            debug_dir=Path("debug") / run_context.path_batch_id / "summary" / check_in,
         )
         public_records = [record for record in stay_records if is_publishable_record(record)]
         discarded_records = [record for record in stay_records if not is_publishable_record(record)]
@@ -267,13 +271,18 @@ def _job_log_prefix(job: CrawlJob) -> str:
     return f"{job.destination} {job.check_in}"
 
 
-def _new_run_id() -> str:
-    return f"run_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid4().hex[:8]}"
-
-
-def _new_run_manifest(run_id: str, args, destinations: List[str], stays: List[tuple[str, str]]) -> Dict:
+def _new_run_manifest(
+    run_context: RunContext,
+    args,
+    destinations: List[str],
+    stays: List[tuple[str, str]],
+) -> Dict:
     return {
-        "run_id": run_id,
+        "run_id": run_context.airflow_run_id,
+        "batch_id": run_context.batch_id,
+        "airflow_dag_id": run_context.airflow_dag_id,
+        "airflow_run_id": run_context.airflow_run_id,
+        "airflow_try_number": run_context.airflow_try_number,
         "status": "running",
         "started_at": _utc_now(),
         "git_revision": _git_revision(),

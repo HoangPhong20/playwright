@@ -2,9 +2,11 @@
 
 ## Run isolation and concurrency
 
-Each execution writes to `<output-dir>/run_<UTC timestamp>_<id>/` with a
-`run_manifest.json` containing effective configuration, Git revision,
-timestamps, and stay summaries. JSONL append behavior is isolated to one run.
+Each execution writes to
+`<output-dir>/dag_id=<id>/batch_id=<id>/attempt=<number>/` with a
+`run_manifest.json` containing Airflow run metadata, effective configuration,
+Git revision, timestamps, and stay summaries. JSONL append behavior is
+isolated to one attempt.
 
 `AGODA_DETAIL_CONCURRENCY` limits detail work inside one job.
 `AGODA_TOTAL_DETAIL_CONCURRENCY` limits detail browser workers across all

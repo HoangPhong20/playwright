@@ -1,0 +1,9 @@
+{
+  "page_number": 10,
+  "pagination_status": "navigation_failed",
+  "url": "https://www.agoda.com/vi-vn/account/signin.html?ottoken=eyJhbGciOiJBMjU2S1ciLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIn0.jvhnbPnpliRKDwQIXw1oMOffUM4sd0XEar2s0CcVsj5v02tMpaqdc1mv5sb1_Ckrc4BW_pI9B7xvDhl8fjX2g9uQo6JPvo_H.V8WRe9XFbuEXiPlfd1E0jQ.6OCujsoCdUrG-lMaxrPx1HBqtL4MvlGERo3cGsgxroYitP61HgTdfTGQQryrrmKI.G5nGAiQupFuVd-EOOD-jL8PszeeqUGnPPB15NtmAN2c&returnurl=%2Fvi-vn%2Fsearch%3Fcity%3D16440%26checkIn%3D2026-08-15%26los%3D1%26rooms%3D1%26adults%3D2%26children%3D0%26checkOut%3D2026-08-16%26textToSearch%3DDa%2BNang%26cid%3D-1%26finalPriceView%3D1%26isShowMobileAppPrice%3Dfalse%26familyMode%3Dfalse%26maxRooms%3D0%26childAges%3D%26numberOfGuest%3D0%26missingChildAges%3Dfalse%26travellerType%3D1%26showReviewSubmissionEntry%3Dfalse%26currencyCode%3DVND%26isFreeOccSearch%3Dfalse%26ds%3DuBsBcZmdolJJrSw3",
+  "pagination_evidence": {
+    "reason": "navigation_control_unavailable",
+    "attempt": 3
+  }
+}

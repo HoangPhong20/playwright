@@ -3,6 +3,7 @@
 .venv/
 venv/
 .env
+/airflow/logs/
 __pycache__/
 *.py[cod]
 *.egg-info/

@@ -24,8 +24,8 @@ def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
     assert args.enrich_details is True
     assert args.max_detail_pages == 0
     assert args.output_dir == "data"
-    assert args.max_pages == 10
-    assert args.destinations == "Vung Tau,Da Nang,Nha Trang"
+    assert args.max_pages == 5
+    assert args.destinations == "Vung Tau,Da Nang,Nha Trang,Ho Chi Minh"
     assert args.date_start == "2026-06-01"
     assert args.date_end == "2026-06-30"
     assert not hasattr(args, "nights")
@@ -41,6 +41,9 @@ def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
     assert args.stable_rounds == 3
     assert args.scroll_wait_ms == 1000
     assert args.print_records is False
+    assert args.airflow_dag_id is None
+    assert args.airflow_run_id is None
+    assert args.airflow_try_number == 1
 
 
 def test_parse_detail_fields_accepts_known_fields() -> None:

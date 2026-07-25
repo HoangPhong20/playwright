@@ -53,6 +53,14 @@ def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
     parser.add_argument("--children", type=int, default=env_int(config, "AGODA_CHILDREN", 0), help="Number of children")
     parser.add_argument("--locale", default=config.get("AGODA_LOCALE", DEFAULT_LOCALE), help="Agoda locale, e.g. en-us or vi-vn")
     parser.add_argument("--output-dir", default=config.get("AGODA_OUTPUT_DIR", "data"), help="Directory for dated JSONL output")
+    parser.add_argument("--airflow-dag-id", help="Airflow DAG ID that owns this crawler batch")
+    parser.add_argument("--airflow-run-id", help="Airflow DAG run ID that owns this crawler batch")
+    parser.add_argument(
+        "--airflow-try-number",
+        type=int,
+        default=1,
+        help="Airflow task try number; creates an isolated retry output directory",
+    )
     parser.add_argument(
         "--enrich-details",
         action=argparse.BooleanOptionalAction,

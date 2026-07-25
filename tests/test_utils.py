@@ -75,6 +75,10 @@ def test_project_output_record_removes_debug_fields() -> None:
         "normalized_destination",
         "check_in",
         "check_out",
+        "batch_id",
+        "airflow_dag_id",
+        "airflow_run_id",
+        "airflow_try_number",
     ]
     assert "canonical_url" not in output
     assert "candidate_urls" not in output

@@ -64,8 +64,8 @@ python main.py --date-start 2026-06-10 --date-end 2026-06-10 `
 
 The checked-in `.env` uses headless mode with 2 outer workers and detail concurrency 3:
 
-- `AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang`
-- `AGODA_MAX_PAGES=10`
+- `AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang,Ho Chi Minh`
+- `AGODA_MAX_PAGES=5`
 - `AGODA_HEADLESS=true`
 - `AGODA_ENRICH_DETAILS=true`
 - `AGODA_MAX_DETAIL_PAGES=0`

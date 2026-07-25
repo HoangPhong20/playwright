@@ -17,8 +17,8 @@ python main.py --date-start 2026-06-10 --date-end 2026-06-10
 Command trên dùng các default trong `.env` hiện tại:
 
 ```text
-AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang
-AGODA_MAX_PAGES=10
+AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang,Ho Chi Minh
+AGODA_MAX_PAGES=5
 AGODA_HEADLESS=true
 AGODA_ENRICH_DETAILS=true
 AGODA_MAX_DETAIL_PAGES=0
@@ -28,21 +28,39 @@ AGODA_MIN_OPTIONAL_COVERAGE=90
 AGODA_OUTPUT_DIR=data/raw
 ```
 
-`AGODA_MAX_PAGES=10` nghĩa là crawl tối đa 10 result pages cho mỗi city/date job. Detail enrichment đang bật và không giới hạn detail page.
+`AGODA_MAX_PAGES=5` nghĩa là crawl tối đa 5 result pages cho mỗi city/date job. Detail enrichment đang bật và không giới hạn detail page.
 
 ## Run isolation and concurrency
 
-Each invocation now creates a unique directory:
+## Airflow batch identity
+
+When run through Airflow, the crawler does not create a UUID run ID. Every
+invocation must provide `--airflow-dag-id`, `--airflow-run-id`, and
+`--airflow-try-number`. Those values produce a deterministic `batch_id`, add
+provenance fields to every public JSONL record, and isolate retry output under
+`dag_id=<id>/batch_id=<id>/attempt=<number>/`.
+
+For a manual invocation, provide explicit values, for example:
+
+```powershell
+python main.py --airflow-dag-id adhoc --airflow-run-id manual_20260725_001 `
+  --airflow-try-number 1 --date-start 2026-08-15 --date-end 2026-08-15
+```
+
+See `docs/DATABRICKS_INGESTION.md` for the manifest and ingestion-ledger
+contract used to avoid loading one batch twice.
+
+Each invocation writes to a deterministic Airflow batch directory:
 
 ```text
-<output-dir>/run_<UTC timestamp>_<id>/
+<output-dir>/dag_id=<id>/batch_id=<id>/attempt=<number>/
   run_manifest.json
   agoda_hotels_<check-in>.jsonl
 ```
 
-`run_manifest.json` stores the run ID, timestamps, effective CLI/.env config,
-Git revision, and per-stay summary. This prevents a rerun from mixing JSONL
-records with an earlier run.
+`run_manifest.json` stores Airflow run metadata, timestamps, effective
+CLI/.env config, Git revision, and per-stay summary. This prevents a retry
+from mixing JSONL records with an earlier attempt.
 
 Pagination never uses a constructed page URL. A page is accepted only after
 listing content changes (canonical hotel URLs or first hotel identity), not
@@ -92,7 +110,7 @@ python main.py --date-start 2026-06-10 --date-end 2026-06-10
 Override city/date khi cần:
 
 ```powershell
-python main.py --destinations "Vung Tau,Da Nang,Nha Trang" `
+python main.py --destinations "Vung Tau,Da Nang,Nha Trang,Ho Chi Minh" `
   --date-start 2026-06-10 --date-end 2026-06-16
 ```
 
