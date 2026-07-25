@@ -138,6 +138,7 @@ def _enrich_pending_records(
     detail_fields: tuple[str, ...],
     field_retry_timeout: int,
     field_retry_count: int,
+    detail_worker_semaphore=None,
 ) -> int:
     pending = [
         record
@@ -174,6 +175,7 @@ def _enrich_pending_records(
         detail_fields=detail_fields,
         field_retry_timeout=field_retry_timeout,
         field_retry_count=field_retry_count,
+        detail_worker_semaphore=detail_worker_semaphore,
     )
     return detail_pages_used + len(pending)
 
@@ -199,6 +201,7 @@ def crawl_agoda_search(
     detail_fields: tuple[str, ...] = DEFAULT_DETAIL_ENRICH_FIELDS,
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
+    detail_worker_semaphore=None,
 ) -> List[Dict]:
     """
     Crawl Agoda hotel search results and return a list of hotel records.
@@ -237,6 +240,7 @@ def crawl_agoda_search(
                 detail_fields=detail_fields,
                 field_retry_timeout=field_retry_timeout,
                 field_retry_count=field_retry_count,
+                detail_worker_semaphore=detail_worker_semaphore,
             )
         finally:
             if browser is not None:
@@ -268,6 +272,7 @@ def crawl_agoda_search_with_browser(
     detail_fields: tuple[str, ...] = DEFAULT_DETAIL_ENRICH_FIELDS,
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
+    detail_worker_semaphore=None,
 ) -> List[Dict]:
     """Crawl one Agoda search using an existing browser instance."""
     _validate_supported_occupancy(adults, rooms, children)
@@ -344,7 +349,8 @@ def crawl_agoda_search_with_browser(
                         wait_for_cards(page)
                     except Exception as exc:
                         log_ignored_error(
-                            f"Page {target_page}: retry reload failed attempt={attempt}/3",
+                            "Pagination transition failed "
+                            f"page={target_page} reason=retry_reload_error attempt={attempt}/3",
                             exc,
                         )
                 if not _go_to_verified_page_start(
@@ -352,8 +358,39 @@ def crawl_agoda_search_with_browser(
                     target_page,
                     prefer_next=(attempt == 1),
                 ):
+                    failure_evidence = {
+                        "reason": "navigation_control_unavailable",
+                        "attempt": attempt,
+                    }
+                    page_statuses[target_page] = "navigation_failed"
+                    _save_pagination_page_artifacts(
+                        page,
+                        target_page,
+                        "navigation_failed",
+                        failure_evidence,
+                    )
                     continue
-                card_selector = wait_for_cards(page)
+                try:
+                    card_selector = wait_for_cards(page)
+                except Exception as exc:
+                    failure_evidence = {
+                        "reason": "cards_not_ready_after_navigation",
+                        "attempt": attempt,
+                        "error": str(exc).splitlines()[0],
+                    }
+                    page_statuses[target_page] = "navigation_failed"
+                    _save_pagination_page_artifacts(
+                        page,
+                        target_page,
+                        "navigation_failed",
+                        failure_evidence,
+                    )
+                    log(
+                        f"Page {target_page}: pagination rejected "
+                        f"reason=cards_not_ready_after_navigation attempt={attempt}/"
+                        f"{PAGINATION_NAVIGATION_ATTEMPTS}"
+                    )
+                    continue
                 scroll_y_after_navigation = _scroll_y(page)
                 probe_state = _probe_current_page_state(
                     page,
@@ -368,6 +405,11 @@ def crawl_agoda_search_with_browser(
                     else {"verified": True, "signs": {}, "sign_count": 0}
                 )
                 if not probe_evidence.get("verified"):
+                    probe_evidence = {
+                        **probe_evidence,
+                        "reason": "content_unchanged_after_navigation",
+                        "attempt": attempt,
+                    }
                     page_unique_url_counts[target_page] = len(probe_state.canonical_urls)
                     page_unique_record_counts[target_page] = len(probe_state.canonical_urls)
                     page_statuses[target_page] = "duplicate_page"
@@ -378,7 +420,8 @@ def crawl_agoda_search_with_browser(
                         probe_evidence,
                     )
                     log(
-                        f"Page {target_page}: duplicate probe "
+                        f"Page {target_page}: pagination rejected "
+                        "reason=content_unchanged_after_navigation "
                         f"attempt={attempt}/3 signs={probe_evidence.get('sign_count')}"
                     )
                     continue
@@ -432,6 +475,11 @@ def crawl_agoda_search_with_browser(
                     break
 
                 page_statuses[target_page] = "duplicate_page"
+                evidence = {
+                    **evidence,
+                    "reason": "content_unchanged_after_full_collection",
+                    "attempt": attempt,
+                }
                 _update_page_debug_status(target_page, "duplicate_page", evidence)
                 _save_pagination_page_artifacts(
                     page,
@@ -440,7 +488,8 @@ def crawl_agoda_search_with_browser(
                     evidence,
                 )
                 log(
-                    f"Page {target_page}: duplicate "
+                    f"Page {target_page}: pagination rejected "
+                    "reason=content_unchanged_after_full_collection "
                     f"attempt={attempt}/{PAGINATION_NAVIGATION_ATTEMPTS} "
                     f"signs={evidence.get('sign_count')}"
                 )
@@ -494,6 +543,7 @@ def crawl_agoda_search_with_browser(
                 detail_fields,
                 field_retry_timeout,
                 field_retry_count,
+                detail_worker_semaphore,
             )
             detail_seconds += _elapsed_seconds(detail_batch_started_at)
             timing["detail_seconds"] = detail_seconds

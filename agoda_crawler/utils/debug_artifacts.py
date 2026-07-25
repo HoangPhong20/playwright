@@ -1,7 +1,10 @@
 """Debug artifact writers for Agoda crawler runs."""
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 from datetime import datetime
 from pathlib import Path
+import re
 from typing import Dict, List, Optional
 
 from playwright.sync_api import Page
@@ -11,13 +14,37 @@ from agoda_crawler.listing.collection import ListingCollectionMetrics
 from agoda_crawler.utils.logging import log
 
 
+_DEBUG_CONTEXT: ContextVar[tuple[str, str, str] | None] = ContextVar(
+    "debug_context",
+    default=None,
+)
+
+
+@contextmanager
+def debug_run_context(run_id: str, destination: str, check_in: str):
+    token = _DEBUG_CONTEXT.set((run_id, destination, check_in))
+    try:
+        yield
+    finally:
+        _DEBUG_CONTEXT.reset(token)
+
+
+def debug_directory(category: str) -> Path:
+    context = _DEBUG_CONTEXT.get()
+    if context is None:
+        return Path("debug") / category
+    run_id, destination, check_in = context
+    destination_slug = re.sub(r"[^a-z0-9]+", "-", destination.lower()).strip("-") or "unknown"
+    return Path("debug") / run_id / destination_slug / check_in / category
+
+
 def save_listing_debug_artifacts(
     page: Page,
     page_number: int,
     metrics: ListingCollectionMetrics,
 ) -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    debug_dir = Path("debug/listing_errors")
+    debug_dir = debug_directory("listing_errors")
     debug_dir.mkdir(parents=True, exist_ok=True)
     base_path = debug_dir / f"page_{page_number}_{timestamp}"
     report_path = base_path.with_suffix(".json")
@@ -55,7 +82,7 @@ def save_final_listing_artifacts(
 def update_page_debug_status(page_number: int, status: str, evidence: Optional[Dict] = None) -> None:
     if status == "collected":
         return
-    metrics_path = Path("debug/pagination_errors") / f"page_{page_number}_metrics.json"
+    metrics_path = debug_directory("pagination_errors") / f"page_{page_number}_metrics.json"
     if metrics_path.exists():
         try:
             report = json.loads(metrics_path.read_text(encoding="utf-8"))
@@ -78,7 +105,7 @@ def save_pagination_page_artifacts(
 ) -> None:
     if status == "collected":
         return
-    debug_dir = Path("debug/pagination_errors")
+    debug_dir = debug_directory("pagination_errors")
     debug_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = debug_dir / f"page_{page_number}_metrics.json"
     html_path = debug_dir / f"page_{page_number}.html"

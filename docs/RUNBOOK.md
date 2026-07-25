@@ -13,6 +13,17 @@ playwright install
 
 Mặc định `.env` chạy headless, outer workers là 2 và detail concurrency là 3.
 
+## Run output and detail cap
+
+Every command below creates a new run directory automatically, including a
+`run_manifest.json`. For a 2-worker/3-detail setup, keep the global cap at 3:
+
+```text
+AGODA_TOTAL_DETAIL_CONCURRENCY=3
+```
+
+Use `--total-detail-concurrency` only when intentionally overriding that cap.
+
 ## Smoke test listing
 
 Lệnh này không crawl detail nên nhanh và phù hợp để kiểm tra selector/pagination:

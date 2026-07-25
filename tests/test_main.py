@@ -24,13 +24,14 @@ def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
     assert args.enrich_details is True
     assert args.max_detail_pages == 0
     assert args.output_dir == "data"
-    assert args.max_pages == 0
+    assert args.max_pages == 10
     assert args.destinations == "Vung Tau,Da Nang,Nha Trang"
     assert args.date_start == "2026-06-01"
     assert args.date_end == "2026-06-30"
     assert not hasattr(args, "nights")
     assert args.workers == 3
     assert args.detail_concurrency == 2
+    assert args.total_detail_concurrency == 3
     assert args.enrich_missing_only is True
     assert args.detail_timeout == 30000
     assert args.field_retry_timeout == 1500
@@ -93,6 +94,7 @@ def test_parse_args_uses_env_defaults(monkeypatch) -> None:
             "AGODA_ENRICH_DETAILS": "false",
             "AGODA_WORKERS": "3",
             "AGODA_DETAIL_CONCURRENCY": "3",
+            "AGODA_TOTAL_DETAIL_CONCURRENCY": "4",
             "AGODA_DETAIL_TIMEOUT": "20000",
             "AGODA_FIELD_RETRY_TIMEOUT": "1200",
             "AGODA_FIELD_RETRY_COUNT": "1",
@@ -111,6 +113,7 @@ def test_parse_args_uses_env_defaults(monkeypatch) -> None:
     assert args.enrich_details is False
     assert args.workers == 3
     assert args.detail_concurrency == 3
+    assert args.total_detail_concurrency == 4
     assert args.detail_timeout == 20000
     assert args.field_retry_timeout == 1200
     assert args.field_retry_count == 1
@@ -232,6 +235,20 @@ def test_build_crawl_jobs_creates_destination_date_matrix(monkeypatch) -> None:
     assert jobs[0].output_path.name == "agoda_hotels_2026-06-01.jsonl"
     assert jobs[-1].destination == "Nha Trang"
     assert jobs[-1].check_in == "2026-06-30"
+
+
+def test_build_crawl_jobs_uses_the_given_run_directory(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(sys, "argv", ["main.py"])
+    args = parse_args(env={})
+
+    jobs = build_crawl_jobs(
+        args,
+        ["Vung Tau"],
+        [("2026-06-01", "2026-06-02")],
+        output_dir=tmp_path / "run_abc",
+    )
+
+    assert jobs[0].output_path == tmp_path / "run_abc" / "agoda_hotels_2026-06-01.jsonl"
 
 
 def test_jobs_for_stay_keeps_one_day_batch(monkeypatch) -> None:

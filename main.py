@@ -11,6 +11,7 @@ from agoda_crawler.orchestration import (
     DEFAULT_DETAIL_FIELDS,
     DEFAULT_DETAIL_TIMEOUT,
     DEFAULT_DETAIL_CONCURRENCY,
+    DEFAULT_TOTAL_DETAIL_CONCURRENCY,
     DEFAULT_FIELD_RETRY_COUNT,
     DEFAULT_FIELD_RETRY_TIMEOUT,
     DEFAULT_MAX_PAGES,
@@ -122,6 +123,12 @@ def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
         type=int,
         default=env_int(config, "AGODA_DETAIL_CONCURRENCY", DEFAULT_DETAIL_CONCURRENCY),
         help="Parallel detail pages per crawl job",
+    )
+    parser.add_argument(
+        "--total-detail-concurrency",
+        type=int,
+        default=env_int(config, "AGODA_TOTAL_DETAIL_CONCURRENCY", DEFAULT_TOTAL_DETAIL_CONCURRENCY),
+        help="Maximum detail browser workers across all concurrent crawl jobs",
     )
     parser.add_argument(
         "--print-records",

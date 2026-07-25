@@ -18,7 +18,7 @@ Command trên dùng các default trong `.env` hiện tại:
 
 ```text
 AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang
-AGODA_MAX_PAGES=0
+AGODA_MAX_PAGES=10
 AGODA_HEADLESS=true
 AGODA_ENRICH_DETAILS=true
 AGODA_MAX_DETAIL_PAGES=0
@@ -28,7 +28,31 @@ AGODA_MIN_OPTIONAL_COVERAGE=90
 AGODA_OUTPUT_DIR=data/raw
 ```
 
-`AGODA_MAX_PAGES=0` nghĩa là crawl đến khi pagination dừng. Detail enrichment đang bật và không giới hạn detail page.
+`AGODA_MAX_PAGES=10` nghĩa là crawl tối đa 10 result pages cho mỗi city/date job. Detail enrichment đang bật và không giới hạn detail page.
+
+## Run isolation and concurrency
+
+Each invocation now creates a unique directory:
+
+```text
+<output-dir>/run_<UTC timestamp>_<id>/
+  run_manifest.json
+  agoda_hotels_<check-in>.jsonl
+```
+
+`run_manifest.json` stores the run ID, timestamps, effective CLI/.env config,
+Git revision, and per-stay summary. This prevents a rerun from mixing JSONL
+records with an earlier run.
+
+Pagination never uses a constructed page URL. A page is accepted only after
+listing content changes (canonical hotel URLs or first hotel identity), not
+merely because the browser URL changed. Diagnostics are isolated in
+`debug/<run-id>/<destination>/<check-in>/`.
+
+`--detail-concurrency` is the maximum inside one crawl job.
+`--total-detail-concurrency` / `AGODA_TOTAL_DETAIL_CONCURRENCY` is the global
+cap across all jobs. The checked-in default is 3, so two outer workers cannot
+open six detail browsers at once.
 
 ## Setup
 

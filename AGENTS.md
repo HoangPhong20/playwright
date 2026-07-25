@@ -65,7 +65,7 @@ python main.py --date-start 2026-06-10 --date-end 2026-06-10 `
 The checked-in `.env` uses headless mode with 2 outer workers and detail concurrency 3:
 
 - `AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang`
-- `AGODA_MAX_PAGES=0`
+- `AGODA_MAX_PAGES=10`
 - `AGODA_HEADLESS=true`
 - `AGODA_ENRICH_DETAILS=true`
 - `AGODA_MAX_DETAIL_PAGES=0`
@@ -81,6 +81,14 @@ Listing collection merges records during each scroll round. JSONL output is
 still written after the job completes detail enrichment.
 Network routing blocks non-essential resources per context; keep it configurable
 because site resource-loading behavior can change over time.
+
+## Run isolation and concurrency
+
+Runtime output is scoped to `<output-dir>/run_<UTC timestamp>_<id>/` and
+includes `run_manifest.json`. Pagination diagnostics are under
+`debug/<run-id>/<destination>/<check-in>/`; do not reintroduce global
+page-number-only debug filenames. `AGODA_DETAIL_CONCURRENCY` is per job, while
+`AGODA_TOTAL_DETAIL_CONCURRENCY` caps all concurrently open detail browsers.
 
 ## Coding Style
 

@@ -1,0 +1,17 @@
+services:
+  crawler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agoda-crawler:local
+    env_file:
+      - .env
+    init: true
+    shm_size: 1gb
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp_profile.json
+    volumes:
+      - ./data:/app/data
+      - ./debug:/app/debug

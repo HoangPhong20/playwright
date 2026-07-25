@@ -66,18 +66,20 @@ def annotate_record(record: Dict, destination: str, check_in: str, check_out: st
     return enriched
 
 
-def output_path_for_stay(args, check_in: str) -> Path:
-    return make_daily_output_path(args.output_dir, check_in)
+def output_path_for_stay(args, check_in: str, output_dir: str | Path | None = None) -> Path:
+    """Build a per-stay output path, optionally under one isolated run directory."""
+    return make_daily_output_path(str(output_dir or args.output_dir), check_in)
 
 
 def build_crawl_jobs(
     args,
     destinations: List[str],
     stays: List[tuple[str, str]],
+    output_dir: str | Path | None = None,
 ) -> List[CrawlJob]:
     jobs: List[CrawlJob] = []
     for check_in, check_out in stays:
-        output_path = output_path_for_stay(args, check_in)
+        output_path = output_path_for_stay(args, check_in, output_dir)
         for destination in destinations:
             jobs.append(
                 CrawlJob(

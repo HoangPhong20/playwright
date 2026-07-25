@@ -206,10 +206,12 @@ def write_crawl_results(results: List[CrawlJobResult]) -> None:
             append_jsonl(result.job.output_path, project_output_record(record))
 
 
-def write_latest_outputs(records: List[Dict]) -> None:
-    partial_debug_path = Path("debug/partial_missing_url_records.json")
-    missing_price_debug_path = Path("debug/missing_price_records.json")
-    discarded_debug_path = Path("debug/discarded_records.json")
+def write_latest_outputs(records: List[Dict], debug_dir: Path | None = None) -> None:
+    """Write diagnostic records without mixing separate crawler runs."""
+    target_dir = debug_dir or Path("debug")
+    partial_debug_path = target_dir / "partial_missing_url_records.json"
+    missing_price_debug_path = target_dir / "missing_price_records.json"
+    discarded_debug_path = target_dir / "discarded_records.json"
     partial_debug_path.parent.mkdir(parents=True, exist_ok=True)
     partial_debug_records = []
     missing_price_records = []

@@ -7,6 +7,7 @@ from playwright.sync_api import Page
 
 from agoda_crawler.navigation import go_to_next_page, go_to_results_page
 from agoda_crawler.listing.scrolling import scroll_y
+from agoda_crawler.utils.logging import log_ignored_error
 
 
 @dataclass(frozen=True)
@@ -195,12 +196,12 @@ def go_to_verified_page_start(page: Page, target_page: int, prefer_next: bool) -
         return False
     try:
         page.evaluate("() => window.scrollTo(0, 0)")
-    except Exception:
-        pass
+    except Exception as exc:
+        log_ignored_error("Pagination transition failed reason=scroll_reset_error", exc)
     try:
         page.wait_for_timeout(750)
-    except Exception:
-        pass
+    except Exception as exc:
+        log_ignored_error("Pagination transition failed reason=settle_wait_error", exc)
     return True
 
 

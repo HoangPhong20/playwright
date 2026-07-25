@@ -1,5 +1,17 @@
 # Data contract và quality rules
 
+## Run isolation
+
+Public JSONL paths are scoped to one execution:
+
+```text
+<output-dir>/run_<UTC timestamp>_<id>/agoda_hotels_<check-in>.jsonl
+```
+
+The directory includes `run_manifest.json`; debug diagnostics are under
+`debug/<run-id>/...`. This prevents reruns from mixing output records or
+overwriting pagination evidence from concurrent destinations.
+
 ## Output JSONL
 
 Mỗi dòng là một object JSON. File có tên:

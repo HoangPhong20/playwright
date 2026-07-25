@@ -66,3 +66,11 @@ def test_force_hotel_mode_continue_reraises_other_errors(monkeypatch) -> None:
         assert "Activities shell" in str(exc)
     else:
         raise AssertionError("Expected non-tab hotel mode errors to propagate")
+
+
+def test_pagination_never_constructs_a_page_url_when_controls_are_missing(monkeypatch) -> None:
+    monkeypatch.setattr(navigation_search, "_click_next_page_control", lambda _page: False)
+    monkeypatch.setattr(navigation_search, "_click_page_number_control", lambda _page, _number: False)
+    monkeypatch.setattr(navigation_search, "_open_next_page_link", lambda _page, _number: False)
+
+    assert navigation_search.go_to_results_page(object(), 3, prefer_next=True) is False

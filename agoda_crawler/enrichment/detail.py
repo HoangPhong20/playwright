@@ -3,7 +3,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Dict, List
+from queue import Empty, Queue
+from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from playwright.sync_api import BrowserContext, Page, sync_playwright
@@ -53,6 +54,7 @@ def enrich_records_from_details(
     detail_fields: tuple[str, ...] = DEFAULT_DETAIL_ENRICH_FIELDS,
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
+    detail_worker_semaphore: Optional[threading.BoundedSemaphore] = None,
 ) -> None:
     limit = None if max_detail_pages <= 0 else max_detail_pages
     candidates = sorted(
@@ -80,20 +82,28 @@ def enrich_records_from_details(
 
     worker_count = max(1, min(detail_concurrency, len(candidates)))
     if worker_count == 1:
-        enrich_records_from_details_serial(
-            context,
-            candidates,
-            check_in=check_in,
-            check_out=check_out,
-            adults=adults,
-            rooms=rooms,
-            children=children,
-            total_label=str(len(candidates)),
-            detail_timeout=detail_timeout,
-            detail_fields=detail_fields,
-            field_retry_timeout=field_retry_timeout,
-            field_retry_count=field_retry_count,
-        )
+        acquired_global_slot = False
+        try:
+            if detail_worker_semaphore is not None:
+                detail_worker_semaphore.acquire()
+                acquired_global_slot = True
+            enrich_records_from_details_serial(
+                context,
+                candidates,
+                check_in=check_in,
+                check_out=check_out,
+                adults=adults,
+                rooms=rooms,
+                children=children,
+                total_label=str(len(candidates)),
+                detail_timeout=detail_timeout,
+                detail_fields=detail_fields,
+                field_retry_timeout=field_retry_timeout,
+                field_retry_count=field_retry_count,
+            )
+        finally:
+            if acquired_global_slot:
+                detail_worker_semaphore.release()
         return
 
     total_label = str(len(candidates))
@@ -114,6 +124,7 @@ def enrich_records_from_details(
         detail_fields=detail_fields,
         field_retry_timeout=field_retry_timeout,
         field_retry_count=field_retry_count,
+        detail_worker_semaphore=detail_worker_semaphore,
     )
 
 
@@ -133,6 +144,7 @@ def enrich_records_from_details_parallel(
     detail_fields: tuple[str, ...],
     field_retry_timeout: int,
     field_retry_count: int,
+    detail_worker_semaphore: Optional[threading.BoundedSemaphore],
 ) -> None:
     progress = {
         "started": 0,
@@ -141,15 +153,21 @@ def enrich_records_from_details_parallel(
         "total": len(candidates),
         "started_at": time.perf_counter(),
         "last_log_at": time.perf_counter(),
+        "load_seconds": [],
+        "extract_seconds": [],
+        "total_seconds": [],
+        "retry_count": 0,
     }
     progress_lock = threading.Lock()
-    chunks = chunk_records(candidates, detail_concurrency)
+    records_queue: Queue[Dict] = Queue()
+    for record in candidates:
+        records_queue.put(record)
 
     with ThreadPoolExecutor(max_workers=detail_concurrency) as executor:
         futures = [
             executor.submit(
-                enrich_detail_record_batch,
-                chunk,
+                enrich_detail_record_queue,
+                records_queue,
                 check_in,
                 check_out,
                 adults,
@@ -165,18 +183,12 @@ def enrich_records_from_details_parallel(
                 detail_fields,
                 field_retry_timeout,
                 field_retry_count,
+                detail_worker_semaphore,
             )
-            for chunk in chunks
+            for _ in range(detail_concurrency)
         ]
         for future in as_completed(futures):
             future.result()
-
-
-def chunk_records(records: List[Dict], chunk_count: int) -> List[List[Dict]]:
-    chunks: List[List[Dict]] = [[] for _ in range(chunk_count)]
-    for index, record in enumerate(records):
-        chunks[index % chunk_count].append(record)
-    return [chunk for chunk in chunks if chunk]
 
 
 def enrich_records_from_details_serial(
@@ -197,6 +209,10 @@ def enrich_records_from_details_serial(
     started_at = time.perf_counter()
     last_log_at = started_at
     failed = 0
+    load_seconds: List[float] = []
+    extract_seconds: List[float] = []
+    total_seconds: List[float] = []
+    retry_count = 0
     detail_page = context.new_page()
     try:
         for index, record in enumerate(candidates, start=1):
@@ -217,13 +233,28 @@ def enrich_records_from_details_serial(
             )
             if record.get("enrich_status") == "failed":
                 failed += 1
+            for samples, field in (
+                (load_seconds, "_detail_load_seconds"),
+                (extract_seconds, "_detail_extract_seconds"),
+                (total_seconds, "_detail_total_seconds"),
+            ):
+                value = record.get(field)
+                if isinstance(value, (int, float)):
+                    samples.append(float(value))
+            retry_count += int(record.get("_detail_retry_count") or 0)
             now = time.perf_counter()
             if index == len(candidates) or now - last_log_at >= DETAIL_PROGRESS_INTERVAL:
                 last_log_at = now
                 log(
                     f"Detail progress: {index}/{len(candidates)} "
                     f"failed={failed} elapsed={format_seconds(now - started_at)} "
-                    f"avg={format_seconds((now - started_at) / max(1, index))}"
+                    "throughput_seconds_per_record="
+                    f"{format_seconds((now - started_at) / max(1, index))} "
+                    f"load_avg={format_seconds(average(load_seconds))} "
+                    f"extract_avg={format_seconds(average(extract_seconds))} "
+                    f"total_p50={format_seconds(percentile(total_seconds, 50))} "
+                    f"total_p95={format_seconds(percentile(total_seconds, 95))} "
+                    f"retries={retry_count}"
                 )
     finally:
         try:
@@ -232,15 +263,15 @@ def enrich_records_from_details_serial(
             log_ignored_error("Detail page close failed", exc)
 
 
-def enrich_detail_record_batch(
-    records: List[Dict],
+def enrich_detail_record_queue(
+    records_queue: Queue[Dict],
     check_in: str,
     check_out: str,
     adults: int,
     rooms: int,
     children: int,
     total_label: str,
-    progress: Dict[str, int],
+    progress: Dict,
     progress_lock: threading.Lock,
     headless: bool,
     locale: str,
@@ -249,51 +280,70 @@ def enrich_detail_record_batch(
     detail_fields: tuple[str, ...],
     field_retry_timeout: int,
     field_retry_count: int,
+    detail_worker_semaphore: Optional[threading.BoundedSemaphore],
 ) -> None:
+    try:
+        first_record = records_queue.get_nowait()
+    except Empty:
+        return
+
+    acquired_global_slot = False
     with log_prefix(parent_log_prefix):
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(**browser_context_options(locale))
-            apply_resource_blocking(context)
-            detail_page = context.new_page()
-            try:
-                for record in records:
-                    with progress_lock:
-                        progress["started"] += 1
-                        index = progress["started"]
-                    enrich_one_record_on_page(
-                        detail_page,
-                        record,
-                        check_in,
-                        check_out,
-                        adults,
-                        rooms,
-                        children,
-                        index,
-                        total_label,
-                        detail_timeout,
-                        detail_fields,
-                        field_retry_timeout,
-                        field_retry_count,
-                    )
-                    update_detail_progress(progress, progress_lock, record)
-            finally:
+        try:
+            if detail_worker_semaphore is not None:
+                detail_worker_semaphore.acquire()
+                acquired_global_slot = True
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=headless)
+                context = browser.new_context(**browser_context_options(locale))
+                apply_resource_blocking(context)
+                detail_page = context.new_page()
                 try:
-                    detail_page.close()
-                except Exception as exc:
-                    log_ignored_error("Detail page close failed", exc)
-                try:
-                    context.close()
-                except Exception as exc:
-                    log_ignored_error("Detail context close failed", exc)
-                try:
-                    browser.close()
-                except Exception as exc:
-                    log_ignored_error("Detail browser close failed", exc)
+                    record: Optional[Dict] = first_record
+                    while record is not None:
+                        with progress_lock:
+                            progress["started"] += 1
+                            index = progress["started"]
+                        enrich_one_record_on_page(
+                            detail_page,
+                            record,
+                            check_in,
+                            check_out,
+                            adults,
+                            rooms,
+                            children,
+                            index,
+                            total_label,
+                            detail_timeout,
+                            detail_fields,
+                            field_retry_timeout,
+                            field_retry_count,
+                        )
+                        update_detail_progress(progress, progress_lock, record)
+                        try:
+                            record = records_queue.get_nowait()
+                        except Empty:
+                            record = None
+                finally:
+                    try:
+                        detail_page.close()
+                    except Exception as exc:
+                        log_ignored_error("Detail page close failed", exc)
+                    try:
+                        context.close()
+                    except Exception as exc:
+                        log_ignored_error("Detail context close failed", exc)
+                    try:
+                        browser.close()
+                    except Exception as exc:
+                        log_ignored_error("Detail browser close failed", exc)
+        finally:
+            if acquired_global_slot:
+                detail_worker_semaphore.release()
 
 
 def update_detail_progress(
-    progress: Dict[str, float],
+    progress: Dict,
     progress_lock: threading.Lock,
     record: Dict,
 ) -> None:
@@ -301,6 +351,15 @@ def update_detail_progress(
         progress["completed"] += 1
         if record.get("enrich_status") == "failed":
             progress["failed"] += 1
+        for metric_key, record_key in (
+            ("load_seconds", "_detail_load_seconds"),
+            ("extract_seconds", "_detail_extract_seconds"),
+            ("total_seconds", "_detail_total_seconds"),
+        ):
+            value = record.get(record_key)
+            if isinstance(value, (int, float)):
+                progress[metric_key].append(float(value))
+        progress["retry_count"] += int(record.get("_detail_retry_count") or 0)
         completed = int(progress["completed"])
         failed = int(progress["failed"])
         total = int(progress["total"])
@@ -312,11 +371,21 @@ def update_detail_progress(
         )
         if should_log:
             progress["last_log_at"] = now
+            load_avg = average(progress["load_seconds"])
+            extract_avg = average(progress["extract_seconds"])
+            total_p50 = percentile(progress["total_seconds"], 50)
+            total_p95 = percentile(progress["total_seconds"], 95)
+            retry_count = int(progress["retry_count"])
     if should_log:
         log(
             f"Detail progress: {completed}/{total} "
             f"failed={failed} elapsed={format_seconds(elapsed)} "
-            f"avg={format_seconds(elapsed / max(1, completed))}"
+            "throughput_seconds_per_record="
+            f"{format_seconds(elapsed / max(1, completed))} "
+            f"load_avg={format_seconds(load_avg)} "
+            f"extract_avg={format_seconds(extract_avg)} "
+            f"total_p50={format_seconds(total_p50)} "
+            f"total_p95={format_seconds(total_p95)} retries={retry_count}"
         )
 
 
@@ -354,12 +423,13 @@ def enrich_one_record_on_page(
         handle_cookie_popup(detail_page)
         missing_fields = missing_detail_fields(record, detail_fields)
         extract_started_at = time.perf_counter()
-        extracted_fields = extract_detail_fields_with_field_retry(
+        extracted_fields, retry_count = extract_detail_fields_with_field_retry(
             detail_page,
             missing_fields=missing_fields,
             retry_timeout=field_retry_timeout,
             retry_count=field_retry_count,
         )
+        record["_detail_retry_count"] = retry_count
         record["_detail_extract_seconds"] = elapsed_seconds(extract_started_at)
     except Exception as exc:
         error_text = str(exc).splitlines()[0]
@@ -400,21 +470,23 @@ def extract_detail_fields_with_field_retry(
     missing_fields: tuple[str, ...],
     retry_timeout: int,
     retry_count: int,
-) -> Dict:
+) -> tuple[Dict, int]:
     target_fields = tuple(field for field in missing_fields if field in FIELD_SELECTORS)
     if target_fields:
         wait_for_any_detail_field(page, target_fields, retry_timeout)
 
     detail_fields = extract_detail_fields(page)
     remaining_fields = remaining_missing_fields(detail_fields, target_fields)
+    retries_used = 0
     for _ in range(max(0, retry_count)):
         if not remaining_fields:
             break
+        retries_used += 1
         scroll_detail_for_fields(page, remaining_fields, retry_timeout)
         retry_fields = extract_detail_fields(page)
         merge_missing_fields(detail_fields, retry_fields)
         remaining_fields = remaining_missing_fields(detail_fields, target_fields)
-    return detail_fields
+    return detail_fields, retries_used
 
 
 def remaining_missing_fields(detail_fields: Dict, target_fields: tuple[str, ...]) -> tuple[str, ...]:
@@ -521,3 +593,15 @@ def format_seconds(seconds: float) -> str:
 
 def elapsed_seconds(started_at: float) -> float:
     return round(time.perf_counter() - started_at, 2)
+
+
+def average(values: List[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def percentile(values: List[float], percentile_value: int) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    index = round((len(sorted_values) - 1) * percentile_value / 100)
+    return sorted_values[index]

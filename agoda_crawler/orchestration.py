@@ -1,7 +1,11 @@
 """CLI orchestration for batch Agoda crawls."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-from typing import Dict, List
+from datetime import datetime, timezone
+import subprocess
+import threading
+from pathlib import Path
+from typing import Dict, List, Optional
+from uuid import uuid4
 
 from playwright.sync_api import sync_playwright
 
@@ -19,6 +23,7 @@ from agoda_crawler.jobs import (
     parse_date,
     parse_destinations,
 )
+from agoda_crawler.utils.debug_artifacts import debug_run_context
 from agoda_crawler.utils.logging import log, log_prefix
 from agoda_crawler.utils.run_output import (
     is_publishable_record,
@@ -35,9 +40,10 @@ DEFAULT_DESTINATION = "Vung Tau"
 DEFAULT_DESTINATIONS = "Vung Tau,Da Nang,Nha Trang"
 DEFAULT_DATE_START = "2026-06-01"
 DEFAULT_DATE_END = "2026-06-30"
-DEFAULT_MAX_PAGES = 0
+DEFAULT_MAX_PAGES = 10
 DEFAULT_WORKERS = 3
 DEFAULT_DETAIL_CONCURRENCY = 2
+DEFAULT_TOTAL_DETAIL_CONCURRENCY = 3
 DEFAULT_DETAIL_TIMEOUT = 30_000
 DEFAULT_FIELD_RETRY_TIMEOUT = 1_500
 DEFAULT_FIELD_RETRY_COUNT = 2
@@ -65,13 +71,19 @@ def run_crawl_job_batch(
     jobs: List[CrawlJob],
     args,
     write_output: bool = True,
+    run_id: str = "adhoc",
+    detail_worker_semaphore: Optional[threading.BoundedSemaphore] = None,
 ) -> List[CrawlJobResult]:
     results: List[CrawlJobResult] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless)
         try:
             for job in jobs:
-                with log_prefix(_job_log_prefix(job)):
+                with log_prefix(_job_log_prefix(job)), debug_run_context(
+                    run_id,
+                    job.destination,
+                    job.check_in,
+                ):
                     log("Job started")
                     records = crawl_agoda_search_with_browser(
                         browser,
@@ -91,6 +103,7 @@ def run_crawl_job_batch(
                         detail_timeout=args.detail_timeout,
                         field_retry_timeout=max(0, args.field_retry_timeout),
                         field_retry_count=max(0, args.field_retry_count),
+                        detail_worker_semaphore=detail_worker_semaphore,
                         detail_fields=parse_detail_fields(args.detail_fields),
                         max_scroll_rounds=max(1, args.max_scroll_rounds),
                         stable_rounds=max(1, args.stable_rounds),
@@ -120,15 +133,30 @@ def run_crawl_jobs_for_stay(
     jobs: List[CrawlJob],
     args,
     worker_count: int,
+    run_id: str,
+    detail_worker_semaphore: threading.BoundedSemaphore,
 ) -> List[CrawlJobResult]:
     if worker_count == 1:
-        results = run_crawl_job_batch(jobs, args, write_output=False)
+        results = run_crawl_job_batch(
+            jobs,
+            args,
+            write_output=False,
+            run_id=run_id,
+            detail_worker_semaphore=detail_worker_semaphore,
+        )
     else:
         results = []
         batches = chunk_jobs(jobs, worker_count)
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = [
-                executor.submit(run_crawl_job_batch, batch, args, False)
+                executor.submit(
+                    run_crawl_job_batch,
+                    batch,
+                    args,
+                    False,
+                    run_id,
+                    detail_worker_semaphore,
+                )
                 for batch in batches
             ]
             for future in as_completed(futures):
@@ -142,7 +170,16 @@ def run_crawl_jobs_for_stay(
 def run_from_args(args) -> None:
     destinations = parse_destinations(args.destinations, args.destination)
     stays = iter_stays(args)
-    jobs = build_crawl_jobs(args, destinations, stays)
+    run_id = _new_run_id()
+    run_output_dir = Path(args.output_dir) / run_id
+    run_output_dir.mkdir(parents=True, exist_ok=True)
+    jobs = build_crawl_jobs(args, destinations, stays, output_dir=run_output_dir)
+    manifest_path = run_output_dir / "run_manifest.json"
+    manifest = _new_run_manifest(run_id, args, destinations, stays)
+    _write_run_manifest(manifest_path, manifest)
+    detail_worker_semaphore = threading.BoundedSemaphore(
+        max(1, args.total_detail_concurrency)
+    )
     max_worker_count = max(1, min(args.workers, len(destinations)))
 
     print(
@@ -152,7 +189,8 @@ def run_from_args(args) -> None:
     )
     print(
         "Concurrency: "
-        f"workers={max_worker_count} detail={max(1, args.detail_concurrency)}"
+        f"workers={max_worker_count} detail_per_job={max(1, args.detail_concurrency)} "
+        f"detail_total={max(1, args.total_detail_concurrency)}"
     )
     print(
         "Loading: "
@@ -162,7 +200,7 @@ def run_from_args(args) -> None:
     )
     print(
         "Output: "
-        f"dir={args.output_dir} enrich={args.enrich_details} "
+        f"run_id={run_id} dir={run_output_dir} enrich={args.enrich_details} "
         f"missing_only={args.enrich_missing_only} detail_fields={args.detail_fields}"
     )
     print()
@@ -171,19 +209,28 @@ def run_from_args(args) -> None:
         stay_started_at = datetime.now()
         stay_jobs = jobs_for_stay(jobs, check_in)
         worker_count = max(1, min(args.workers, len(stay_jobs)))
-        output_path = output_path_for_stay(args, check_in)
+        output_path = stay_jobs[0].output_path
         print(
             f"\nStay {check_in} -> {check_out}: "
             f"jobs={len(stay_jobs)} workers={worker_count} output={output_path}"
         )
 
-        stay_results = run_crawl_jobs_for_stay(stay_jobs, args, worker_count)
+        stay_results = run_crawl_jobs_for_stay(
+            stay_jobs,
+            args,
+            worker_count,
+            run_id,
+            detail_worker_semaphore,
+        )
         stay_records = [
             record
             for result in stay_results
             for record in result.records
         ]
-        write_latest_outputs(stay_records)
+        write_latest_outputs(
+            stay_records,
+            debug_dir=Path("debug") / run_id / "summary" / check_in,
+        )
         public_records = [record for record in stay_records if is_publishable_record(record)]
         discarded_records = [record for record in stay_records if not is_publishable_record(record)]
 
@@ -198,7 +245,65 @@ def run_from_args(args) -> None:
         elapsed_seconds = int((datetime.now() - stay_started_at).total_seconds())
         print_verification_summary(public_records, elapsed_seconds, discarded_records)
         print(f"Saved JSONL: {output_path}\n")
+        manifest["stays"].append(
+            {
+                "check_in": check_in,
+                "check_out": check_out,
+                "output_path": str(output_path),
+                "records": len(stay_records),
+                "publishable_records": len(public_records),
+                "discarded_records": len(discarded_records),
+                "elapsed_seconds": elapsed_seconds,
+            }
+        )
+        _write_run_manifest(manifest_path, manifest)
+
+    manifest["status"] = "complete"
+    manifest["finished_at"] = _utc_now()
+    _write_run_manifest(manifest_path, manifest)
 
 
 def _job_log_prefix(job: CrawlJob) -> str:
     return f"{job.destination} {job.check_in}"
+
+
+def _new_run_id() -> str:
+    return f"run_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid4().hex[:8]}"
+
+
+def _new_run_manifest(run_id: str, args, destinations: List[str], stays: List[tuple[str, str]]) -> Dict:
+    return {
+        "run_id": run_id,
+        "status": "running",
+        "started_at": _utc_now(),
+        "git_revision": _git_revision(),
+        "config": vars(args),
+        "destinations": destinations,
+        "planned_stays": [
+            {"check_in": check_in, "check_out": check_out}
+            for check_in, check_out in stays
+        ],
+        "stays": [],
+    }
+
+
+def _write_run_manifest(path: Path, manifest: Dict) -> None:
+    path.write_text(as_json(manifest), encoding="utf-8")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _git_revision() -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None

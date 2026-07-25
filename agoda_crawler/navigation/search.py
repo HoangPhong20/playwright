@@ -14,7 +14,6 @@ from agoda_crawler.navigation.urls import (
     find_city_search_url as _find_city_search_url,
     normalize_agoda_destination,
     parse_iso_date as _parse_iso_date,
-    search_page_urls as _search_page_urls,
     search_url_label as _search_url_label,
     url_targets_page as _url_targets_page,
     with_search_dates as _with_search_dates,
@@ -35,6 +34,8 @@ from agoda_crawler.config import (
     LOAD_PAGE,
     URL_FALLBACK_CARDS_TIMEOUT,
     SEARCH_ATTEMPTS,
+    SEARCH_LISTING_READY_TIMEOUT,
+    SEARCH_READY_TIMEOUT,
     WAIT_AFTER_NAV,
     WAIT_AFTER_SEARCH,
     WAIT_STABLE_LOAD_TIMEOUT,
@@ -162,7 +163,11 @@ def go_to_results_page(
     if _open_next_page_link(page, page_number):
         return True
 
-    return _go_to_next_page_url(page, page_number)
+    log(
+        "Pagination transition failed: "
+        f"page={page_number} reason=no_usable_control_or_agoda_href"
+    )
+    return False
 
 
 def _click_next_page_control(page: Page) -> bool:
@@ -202,7 +207,7 @@ def _click_next_page_control_with_js(page: Page) -> bool:
             """
         )
     except Exception as exc:
-        log_ignored_error("Next page JS click failed", exc)
+        log_ignored_error("Pagination transition failed reason=js_click_error", exc)
         return False
     if not clicked:
         return False
@@ -214,7 +219,7 @@ def _click_next_page_control_with_js(page: Page) -> bool:
     try:
         wait_for_cards(page, timeout_ms=CARDS_TIMEOUT_RETRY)
     except Exception as exc:
-        log_ignored_error("Next page JS card wait failed", exc)
+        log_ignored_error("Pagination transition failed reason=js_cards_not_ready", exc)
     return True
 
 
@@ -277,7 +282,11 @@ def _open_next_page_link(page: Page, page_number: int) -> bool:
             wait_for_cards(page, timeout_ms=CARDS_TIMEOUT_RETRY)
             return True
         except Exception as exc:
-            log(f"Page {page_number}: href failed ({str(exc).splitlines()[0]})")
+            log(
+                "Pagination transition failed: "
+                f"page={page_number} reason=href_navigation_error "
+                f"error={str(exc).splitlines()[0]}"
+            )
             continue
     return False
 
@@ -289,11 +298,12 @@ def _activate_pagination_control(page: Page, control: Locator) -> bool:
     try:
         control.scroll_into_view_if_needed(timeout=CLICK_SHORT)
     except Exception as exc:
-        log_ignored_error("Pagination control scroll failed", exc)
+        log_ignored_error("Pagination transition failed reason=control_scroll_error", exc)
 
     try:
         control.click(timeout=CLICK_NEXT_PAGE)
-    except Exception:
+    except Exception as exc:
+        log_ignored_error("Pagination transition failed reason=control_click_error", exc)
         return False
 
     try:
@@ -305,7 +315,7 @@ def _activate_pagination_control(page: Page, control: Locator) -> bool:
     try:
         wait_for_cards(page, timeout_ms=CARDS_TIMEOUT_RETRY)
     except Exception as exc:
-        log_ignored_error("Pagination control card wait failed", exc)
+        log_ignored_error("Pagination transition failed reason=cards_not_ready", exc)
     return True
 
 
@@ -353,23 +363,6 @@ def _is_disabled_control(control: Locator) -> bool:
     except Exception:
         class_name = ""
     return bool(re.search(r"\b(disabled|inactive)\b", class_name, re.I))
-
-
-def _go_to_next_page_url(page: Page, next_page_number: int) -> bool:
-    for target_url in _search_page_urls(page.url, next_page_number):
-        if target_url == page.url:
-            continue
-        try:
-            log(f"Page {next_page_number}: URL fallback")
-            page.goto(target_url, wait_until="domcontentloaded", timeout=LOAD_PAGE)
-            _wait_until_stable(page)
-            page.wait_for_timeout(WAIT_AFTER_NAV)
-            wait_for_cards(page, timeout_ms=CARDS_TIMEOUT_RETRY)
-            return True
-        except Exception as exc:
-            log(f"Page {next_page_number}: URL fallback failed ({str(exc).splitlines()[0]})")
-            continue
-    return False
 
 
 def _run_city_landing_url_search(
@@ -433,7 +426,7 @@ def _force_hotel_mode(page: Page) -> None:
     page.wait_for_timeout(700)
     _reject_activities_shell(page)
 
-    destination_input = _find_destination_input(page, timeout_ms=8_000)
+    destination_input = _find_destination_input(page, timeout_ms=SEARCH_READY_TIMEOUT)
     if destination_input is None:
         raise RuntimeError("Hotel mode did not expose the destination search input")
 
@@ -556,7 +549,10 @@ def _open_ui_derived_city_search_url(
             page.wait_for_timeout(WAIT_AFTER_SEARCH)
             if _is_activities_shell(page):
                 raise RuntimeError("Derived URL opened Activities shell")
-            return wait_for_cards(page, timeout_ms=URL_FALLBACK_CARDS_TIMEOUT)
+            try:
+                return wait_for_cards(page, timeout_ms=SEARCH_LISTING_READY_TIMEOUT)
+            except PlaywrightTimeoutError:
+                return wait_for_cards(page, timeout_ms=URL_FALLBACK_CARDS_TIMEOUT)
         except Exception as exc:
             last_error = exc
             log(f"Search URL {idx}/{len(candidates)} no cards, trying next ({str(exc).splitlines()[0]})")

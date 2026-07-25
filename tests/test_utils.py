@@ -2,6 +2,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 
 from agoda_crawler.utils import append_jsonl
+from agoda_crawler.utils.debug_artifacts import debug_directory, debug_run_context
 from agoda_crawler.utils.logging import log_ignored_error, log_prefix
 from agoda_crawler.utils.run_output import (
     is_publishable_record,
@@ -22,6 +23,13 @@ def test_append_jsonl_is_thread_safe(tmp_path) -> None:
 
     assert len(lines) == len(records)
     assert sorted(json.loads(line)["index"] for line in lines) == list(range(100))
+
+
+def test_debug_artifacts_are_scoped_to_run_destination_and_stay() -> None:
+    with debug_run_context("run_demo", "Vung Tau", "2026-06-01"):
+        path = debug_directory("pagination_errors")
+
+    assert path.as_posix() == "debug/run_demo/vung-tau/2026-06-01/pagination_errors"
 
 
 def test_log_ignored_error_includes_context_type_and_prefix(capsys) -> None:
