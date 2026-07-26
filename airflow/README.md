@@ -27,32 +27,74 @@ Trước khi chạy, bảo đảm Docker Desktop đang mở và dùng Linux cont
 Docker báo không tìm thấy `dockerDesktopLinuxEngine`, hãy khởi động Docker
 Desktop rồi đợi engine ở trạng thái **Running**.
 
-Truy cập <http://localhost:8080> và đăng nhập bằng `airflow` / `airflow`.
-Đổi thông tin này trong `.env` nếu Airflow không chỉ chạy trên máy cá nhân.
+Truy cập <http://localhost:8080> và đăng nhập bằng tài khoản cấu hình trong
+root `../.env`:
+
+```dotenv
+_AIRFLOW_WWW_USER_USERNAME=<username>
+_AIRFLOW_WWW_USER_PASSWORD=<password>
+```
 
 Image custom có source crawler, Playwright và Chromium. Cấu hình crawler vẫn lấy
 từ file `../.env`; file này không được copy vào image và không được commit.
 
-## 2. Trigger DAG đầu tiên
+## 2. Lịch ngày crawl và manual trigger
 
-Trong UI, vào **Admin → Variables** và tạo hai biến:
+DAG chạy lúc 08:00 mỗi ngày theo `Asia/Ho_Chi_Minh`. Mỗi scheduled run crawl
+đúng một check-in date bằng ngày kết thúc data interval của Airflow cộng 21 ngày;
+check-out là ngày kế tiếp. DAG không còn đọc Variables `agoda_check_in` hoặc
+`agoda_check_out`.
 
-| Key | Ví dụ value |
-| --- | --- |
-| `agoda_check_in` | `2026-08-15` |
-| `agoda_check_out` | `2026-08-16` |
+Để trigger thủ công, mở DAG `agoda_daily_crawl`, bỏ pause và chọn **Trigger DAG**.
+Khi cần đổi số ngày lead, nhập JSON sau trong trigger dialog:
 
-Sau đó mở DAG `agoda_daily_crawl`, bỏ pause và chọn **Trigger DAG**.
+```json
+{"check_in_offset_days": 0}
+```
 
-DAG có hai task:
+Ví dụ trên crawl ngày của chính Airflow interval. Retry giữ nguyên interval và
+check-in date, nên không làm ngày bị tăng thêm.
 
-1. `crawl_agoda` chạy `main.py` với hai ngày từ Variables.
+DAG có bốn task:
+
+1. `crawl_agoda` chạy `main.py --date`; check-out được crawler tự tính là ngày kế tiếp.
 2. `verify_output` kiểm tra manifest hoàn tất, JSONL không rỗng và có ít nhất một record publishable.
+3. `upload_to_uc_volume` đưa JSONL và manifest lên `/Volumes/agoda/raw/crawler`; manifest được upload cuối cùng.
+4. `cleanup_local_output` chỉ xóa output local đã upload thành công quá 14 ngày.
 
 Each Airflow run writes to an isolated `dag_id=<id>/batch_id=<id>/attempt=<n>`
 directory below `data/airflow/`. Every JSONL record and manifest includes the
-Airflow batch metadata. See `../docs/DATABRICKS_INGESTION.md` before adding a
-Databricks loader.
+Airflow batch metadata. Đặt `DATABRICKS_HOST`, `DATABRICKS_TOKEN` và
+`DATABRICKS_UC_VOLUME_PATH` trong root `.env` trước khi chạy DAG; xem
+`../docs/DATABRICKS_INGESTION.md` để biết layout và hợp đồng loader.
+
+## Cấu hình DAG trong `.env`
+
+Không cần sửa Python để đổi các giá trị vận hành sau:
+
+```dotenv
+AGODA_AIRFLOW_SCHEDULE="0 8 * * *"
+AGODA_AIRFLOW_TIMEZONE=Asia/Ho_Chi_Minh
+AGODA_CHECK_IN_OFFSET_DAYS=21
+AGODA_AIRFLOW_OUTPUT_DIR=data/airflow
+AGODA_LOCAL_RETENTION_DAYS=14
+AGODA_AIRFLOW_RETRIES=1
+AGODA_AIRFLOW_RETRY_DELAY_MINUTES=5
+```
+
+Sau khi đổi `.env`, recreate các Airflow services để container nhận biến mới.
+
+Chỉ dùng một file cấu hình là root `../.env`. File này chứa cấu hình crawler,
+Airflow và Databricks, gồm các biến Airflow sau:
+
+```dotenv
+AIRFLOW__CORE__FERNET_KEY=<fernet-key>
+AIRFLOW__API_AUTH__JWT_SECRET=<jwt-secret>
+_AIRFLOW_WWW_USER_USERNAME=<username>
+_AIRFLOW_WWW_USER_PASSWORD=<password>
+```
+
+Không tạo lại `airflow/.env` và không commit root `.env`.
 
 ## 3. Lệnh vận hành
 
@@ -78,8 +120,8 @@ docker compose -f docker-compose.yml build
 docker compose -f docker-compose.yml up -d
 ```
 
-## 4. Bước tiếp theo
+## 4. Vì sao không tăng ngày trong Variable
 
-Khi manual trigger ổn định, thay `schedule=None` trong DAG bằng lịch `08:00`
-hằng ngày theo timezone `Asia/Ho_Chi_Minh`. Chỉ chuyển check-in sang ngày chạy
-DAG hoặc “ngày chạy + N” sau khi đã chốt nhu cầu dữ liệu.
+Check-in date được tính từ Airflow data interval, không từ một Variable có thể
+bị thay đổi. Nhờ vậy retry, manual rerun hoặc task lỗi không thể bỏ qua ngày
+hoặc tăng ngày hai lần.

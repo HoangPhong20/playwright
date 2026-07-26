@@ -6,31 +6,29 @@ phân tích giá, rating, review và số sao.
 
 ## Quick Start
 
-Chạy bằng PowerShell từ thư mục dự án:
+Chạy pipeline chính qua Airflow từ thư mục dự án:
 
 ```powershell
-cd D:\DE\PlayWright
-.\venv\Scripts\Activate.ps1
-python main.py --date-start 2026-06-10 --date-end 2026-06-10
+cd D:\DE\databrick\playwright
+docker compose -f airflow/docker-compose.yml build
+docker compose -f airflow/docker-compose.yml up -d
 ```
 
-Command trên dùng các default trong `.env` hiện tại:
+Mở <http://localhost:8080> và trigger DAG `agoda_daily_crawl`. Cấu hình
+crawler và lịch chạy nằm trong root `.env`.
+
+Các default crawler hiện tại:
 
 ```text
 AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang,Ho Chi Minh
 AGODA_MAX_PAGES=5
 AGODA_HEADLESS=true
-AGODA_ENRICH_DETAILS=true
-AGODA_MAX_DETAIL_PAGES=0
 AGODA_WORKERS=2
 AGODA_DETAIL_CONCURRENCY=3
-AGODA_MIN_OPTIONAL_COVERAGE=90
-AGODA_OUTPUT_DIR=data/raw
+AGODA_TOTAL_DETAIL_CONCURRENCY=3
 ```
 
-`AGODA_MAX_PAGES=5` nghĩa là crawl tối đa 5 result pages cho mỗi city/date job. Detail enrichment đang bật và không giới hạn detail page.
-
-## Run isolation and concurrency
+`AGODA_MAX_PAGES=5` nghĩa là crawl tối đa 5 result pages cho mỗi city/date job.
 
 ## Airflow batch identity
 
@@ -44,7 +42,7 @@ For a manual invocation, provide explicit values, for example:
 
 ```powershell
 python main.py --airflow-dag-id adhoc --airflow-run-id manual_20260725_001 `
-  --airflow-try-number 1 --date-start 2026-08-15 --date-end 2026-08-15
+  --airflow-try-number 1 --date 2026-08-15
 ```
 
 See `docs/DATABRICKS_INGESTION.md` for the manifest and ingestion-ledger
@@ -65,7 +63,7 @@ from mixing JSONL records with an earlier attempt.
 Pagination never uses a constructed page URL. A page is accepted only after
 listing content changes (canonical hotel URLs or first hotel identity), not
 merely because the browser URL changed. Diagnostics are isolated in
-`debug/<run-id>/<destination>/<check-in>/`.
+`debug/<batch-id>/<destination>/<check-in>/`.
 
 `--detail-concurrency` is the maximum inside one crawl job.
 `--total-detail-concurrency` / `AGODA_TOTAL_DETAIL_CONCURRENCY` is the global
@@ -77,10 +75,10 @@ open six detail browsers at once.
 Tạo môi trường lần đầu:
 
 ```powershell
-cd D:\DE\PlayWright
+cd D:\DE\databrick\playwright
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 playwright install
 ```
 
@@ -96,34 +94,43 @@ cd D:\DE\PlayWright
 Smoke test nhanh, 1 city, 1 page, không mở detail:
 
 ```powershell
-python main.py --destinations "Vung Tau" `
-  --date-start 2026-06-10 --date-end 2026-06-10 `
+python main.py --airflow-dag-id adhoc --airflow-run-id smoke_20260726_001 `
+  --airflow-try-number 1 --output-dir data/airflow `
+  --destinations "Vung Tau" `
+  --date 2026-06-10 `
   --max-pages 1 --workers 1 --no-enrich-details
 ```
 
-Production 3 city, 1 ngày, full pages, full detail:
+Chạy thủ công bốn city, một ngày, dùng default trong `.env`:
 
 ```powershell
-python main.py --date-start 2026-06-10 --date-end 2026-06-10
+python main.py --airflow-dag-id adhoc --airflow-run-id manual_20260726_001 `
+  --airflow-try-number 1 --output-dir data/airflow `
+  --date 2026-06-10
 ```
 
 Override city/date khi cần:
 
 ```powershell
-python main.py --destinations "Vung Tau,Da Nang,Nha Trang,Ho Chi Minh" `
-  --date-start 2026-06-10 --date-end 2026-06-16
+python main.py --airflow-dag-id adhoc --airflow-run-id override_20260726_001 `
+  --airflow-try-number 1 --output-dir data/airflow `
+  --destinations "Vung Tau,Da Nang,Nha Trang,Ho Chi Minh" `
+  --date 2026-06-16
 ```
 
-Ghi ra thư mục riêng để tránh append vào file cũ:
+Mỗi `airflow_run_id` và `airflow_try_number` phải là mới. Attempt đã có output
+không thể dùng lại để tránh trộn dữ liệu.
 
 ```powershell
-python main.py --date-start 2026-06-10 --date-end 2026-06-10 `
-  --output-dir data/raw/run_2026_06_10
+python main.py --airflow-dag-id adhoc --airflow-run-id comparison_20260726_001 `
+  --airflow-try-number 1 --date 2026-06-10 `
+  --output-dir data/airflow
 ```
 
 ## Runtime Tuning
 
-Cấu hình mặc định cân bằng runtime và độ phủ dữ liệu:
+Các giá trị dưới đây là profile tuning tham khảo. Giá trị runtime thực tế lấy
+từ root `.env`; nếu không có thì dùng fallback trong `agoda_crawler/config.py`.
 
 ```text
 AGODA_WORKERS=2
@@ -133,16 +140,16 @@ AGODA_DETAIL_TIMEOUT=30000
 AGODA_FIELD_RETRY_TIMEOUT=1200
 AGODA_FIELD_RETRY_COUNT=2
 
-AGODA_MAX_SCROLL_ROUNDS=50
-AGODA_SCROLL_WAIT_MS=600
+AGODA_MAX_SCROLL_ROUNDS=80
+AGODA_SCROLL_WAIT_MS=1000
 AGODA_STABLE_ROUNDS=3
-AGODA_LISTING_FULL_SNAPSHOT_INTERVAL=5
+AGODA_LISTING_FULL_SNAPSHOT_INTERVAL=10
 
-AGODA_WAIT_AFTER_SEARCH=1000
-AGODA_WAIT_AFTER_NAV=1000
-AGODA_CARDS_TIMEOUT=35000
-AGODA_CARDS_TIMEOUT_RETRY=15000
-AGODA_URL_FALLBACK_CARDS_TIMEOUT=25000
+AGODA_WAIT_AFTER_SEARCH=1200
+AGODA_WAIT_AFTER_NAV=1500
+AGODA_CARDS_TIMEOUT=45000
+AGODA_CARDS_TIMEOUT_RETRY=20000
+AGODA_URL_FALLBACK_CARDS_TIMEOUT=30000
 AGODA_BLOCK_RESOURCE_TYPES=image,font,media
 AGODA_BLOCK_URL_KEYWORDS=googletagmanager,google-analytics,doubleclick,facebook,hotjar,clarity,taboola
 ```
@@ -167,8 +174,7 @@ URL để giảm tải cho browser.
 ## Important Arguments
 
 - `--destinations`: danh sách thành phố, phân tách bằng dấu phẩy.
-- `--date-start` / `--date-end`: khoảng check-in batch. Mỗi check-in mặc định 1 đêm.
-- `--check-in` / `--check-out`: dùng cho một stay cụ thể; khi dùng cặp này, đặt `--date-start= --date-end=`.
+- `--date`: ngày check-in duy nhất. Check-out luôn tự động là ngày kế tiếp.
 - `--max-pages`: số result pages tối đa mỗi city/date job; `0` là tất cả.
 - `--workers`: số city/date jobs chạy song song.
 - `--enrich-details` / `--no-enrich-details`: bật/tắt mở trang hotel detail.
@@ -181,25 +187,28 @@ URL để giảm tải cho browser.
 Output JSONL theo ngày:
 
 ```text
-data/raw/agoda_hotels_YYYY-MM-DD.jsonl
+data/airflow/dag_id=<dag-id>/batch_id=<batch-id>/attempt=<try>/
+  agoda_hotels_YYYY-MM-DD.jsonl
+  run_manifest.json
 ```
 
-Mỗi dòng là một hotel record JSON. File được ghi theo kiểu append, nên chạy lại
-cùng ngày/cùng output dir sẽ cộng thêm dữ liệu.
+Mỗi dòng là một hotel record JSON có thêm provenance Airflow: `batch_id`,
+`airflow_dag_id`, `airflow_run_id`, và `airflow_try_number`.
 
-Debug chính nằm trong:
+Debug của một batch nằm trong:
 
 ```text
-debug/
+debug/<encoded-batch-id>/<destination>/<check-in>/
+debug/<encoded-batch-id>/summary/<check-in>/
 ```
 
 File thường gặp:
 
-- `debug/missing_price_records.json`: record thiếu `price_value`.
-- `debug/partial_missing_url_records.json`: record thiếu `hotel_url`.
-- `debug/discarded_records.json`: record bị loại vì thiếu `hotel_name`, `hotel_url` hoặc `price_value`.
-- `debug/pagination_errors/`: bằng chứng khi pagination duplicate hoặc bất thường.
-- `debug/listing_errors/`: snapshot khi listing DOM khó parse.
+- `summary/<check-in>/missing_price_records.json`: record thiếu `price_value`.
+- `summary/<check-in>/partial_missing_url_records.json`: record thiếu `hotel_url`.
+- `summary/<check-in>/discarded_records.json`: record bị loại vì thiếu `hotel_name`, `hotel_url` hoặc `price_value`.
+- `<destination>/<check-in>/pagination_errors/`: bằng chứng khi pagination duplicate hoặc bất thường.
+- `<destination>/<check-in>/listing_errors/`: snapshot khi listing DOM khó parse.
 
 ## Verify Runs
 
@@ -235,7 +244,7 @@ python -B -m pytest -p no:cacheprovider
 
 - `main.py`: CLI entrypoint, parse args và gọi orchestration.
 - `agoda_crawler/config.py`: đọc `.env`, biến môi trường, timeout và runtime defaults.
-- `agoda_crawler/orchestration.py`: tạo city/date jobs, chạy workers, ghi output và summary.
+- `agoda_crawler/orchestration.py`: tạo city/date jobs, chạy workers, ghi output immutable, manifest và summary.
 - `agoda_crawler/jobs.py`: parse destinations/date range và tạo job matrix.
 - `agoda_crawler/crawler.py`: điều phối một crawl job end-to-end.
 - `agoda_crawler/navigation/`: homepage/search URL flow và pagination navigation.

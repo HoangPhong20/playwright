@@ -1,0 +1,9 @@
+{
+  "page_number": 4,
+  "pagination_status": "navigation_failed",
+  "url": "https://www.agoda.com/vi-vn/search?city=13170&checkIn=2026-08-15&los=1&rooms=1&adults=2&children=0&checkOut=2026-08-16&textToSearch=Ho+Chi+Minh&ds=nZIEnGMOwxKLefMY",
+  "pagination_evidence": {
+    "reason": "navigation_control_unavailable",
+    "attempt": 3
+  }
+}

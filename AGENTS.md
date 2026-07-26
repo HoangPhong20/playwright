@@ -14,7 +14,7 @@ utilities.
 
 - `main.py`: CLI argument parsing and handoff to orchestration.
 - `agoda_crawler/config.py`: `.env` and environment-backed runtime defaults.
-- `agoda_crawler/orchestration.py`: job planning, worker execution, JSONL writing, run summaries.
+- `agoda_crawler/orchestration.py`: job planning, worker execution, immutable attempt output, manifest lifecycle, JSONL writing, and run summaries.
 - `agoda_crawler/jobs.py`: destination/date parsing and job matrix helpers.
 - `agoda_crawler/crawler.py`: one crawl job lifecycle, from search through pagination and detail enrichment.
 - `agoda_crawler/navigation/`: Agoda homepage/search flow, URL derivation, pagination navigation.
@@ -32,50 +32,48 @@ Use PowerShell from the repository root.
 
 - `python -m venv venv`: create local virtual environment.
 - `.\venv\Scripts\Activate.ps1`: activate environment.
-- `python -m pip install -r requirements.txt`: install dependencies.
+- `python -m pip install -r requirements-dev.txt`: install development dependencies.
 - `playwright install`: install browser binaries.
 - `python -m pytest`: run tests.
 - `python -B -m pytest -p no:cacheprovider`: run tests without pytest cache.
 
-Runtime examples:
+Manual runtime examples must provide an Airflow-compatible identity:
 
-Use the runtime defaults for 3 cities, all pages, full detail:
+Use the runtime defaults with an explicit manual batch identity:
 
 ```powershell
-python main.py --date-start 2026-06-10 --date-end 2026-06-10
+python main.py --airflow-dag-id adhoc --airflow-run-id manual_001 `
+  --airflow-try-number 1 --date 2026-06-10
 ```
 
 Fast smoke test:
 
 ```powershell
-python main.py --destinations "Vung Tau" `
-  --date-start 2026-06-10 --date-end 2026-06-10 `
+python main.py --airflow-dag-id adhoc --airflow-run-id smoke_001 `
+  --airflow-try-number 1 --destinations "Vung Tau" `
+  --date 2026-06-10 `
   --max-pages 1 --workers 1 --no-enrich-details
 ```
 
 Isolate output for comparison:
 
 ```powershell
-python main.py --date-start 2026-06-10 --date-end 2026-06-10 `
-  --output-dir data/raw/run_2026_06_10
+python main.py --airflow-dag-id adhoc --airflow-run-id comparison_001 `
+  --airflow-try-number 1 --date 2026-06-10 `
+  --output-dir data/airflow
 ```
 
-## Current Runtime Defaults
+## Local Runtime Profile
 
-The checked-in `.env` uses headless mode with 2 outer workers and detail concurrency 3:
+The local root `.env` currently uses headless mode with four destinations, five
+pages, two outer workers, and total detail concurrency 3:
 
 - `AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang,Ho Chi Minh`
 - `AGODA_MAX_PAGES=5`
 - `AGODA_HEADLESS=true`
-- `AGODA_ENRICH_DETAILS=true`
-- `AGODA_MAX_DETAIL_PAGES=0`
 - `AGODA_WORKERS=2`
 - `AGODA_DETAIL_CONCURRENCY=3`
-- `AGODA_MIN_OPTIONAL_COVERAGE=90`
-- `AGODA_OUTPUT_DIR=data/raw`
-- `AGODA_BLOCK_RESOURCE_TYPES=image,font,media`
-- `AGODA_BLOCK_URL_KEYWORDS=googletagmanager,google-analytics,doubleclick,facebook,hotjar,clarity,taboola`
-- `AGODA_LISTING_FULL_SNAPSHOT_INTERVAL=5`
+- `AGODA_TOTAL_DETAIL_CONCURRENCY=3`
 
 Listing collection merges records during each scroll round. JSONL output is
 still written after the job completes detail enrichment.
@@ -84,11 +82,14 @@ because site resource-loading behavior can change over time.
 
 ## Run isolation and concurrency
 
-Runtime output is scoped to `<output-dir>/run_<UTC timestamp>_<id>/` and
-includes `run_manifest.json`. Pagination diagnostics are under
-`debug/<run-id>/<destination>/<check-in>/`; do not reintroduce global
+Runtime output is scoped to
+`<output-dir>/dag_id=<id>/batch_id=<id>/attempt=<number>/` and includes
+`run_manifest.json`. Pagination diagnostics are under
+`debug/<batch-id>/<destination>/<check-in>/`; do not reintroduce global
 page-number-only debug filenames. `AGODA_DETAIL_CONCURRENCY` is per job, while
 `AGODA_TOTAL_DETAIL_CONCURRENCY` caps all concurrently open detail browsers.
+The ignored `.env` is runtime configuration; code fallbacks belong in
+`agoda_crawler/config.py`.
 
 ## Coding Style
 
@@ -109,13 +110,15 @@ page-number-only debug filenames. `AGODA_DETAIL_CONCURRENCY` is per job, while
 
 ## Output And Debug Policy
 
-- Output JSONL is append-only by default. Use a unique `--output-dir` when comparing runs.
+- Each `airflow_run_id` and `airflow_try_number` defines an immutable output
+  attempt. Use a new identity when comparing runs.
 - Treat `data/` and `debug/` as transient runtime artifacts.
 - Do not commit credentials, cookies, personally identifiable scrape output, or large binary diagnostics.
-- Debug files such as `debug/missing_price_records.json`,
-  `debug/partial_missing_url_records.json`, `debug/discarded_records.json`, `debug/pagination_errors/`, and
-  `debug/listing_errors/` are for investigation, not stable fixtures unless
-  explicitly curated.
+- Debug files under `debug/<batch-id>/summary/<check-in>/` such as
+  `missing_price_records.json`, `partial_missing_url_records.json`, and
+  `discarded_records.json`, plus destination diagnostics under
+  `debug/<batch-id>/<destination>/<check-in>/`, are for investigation, not
+  stable fixtures unless explicitly curated.
 - Public JSONL requires `hotel_name`, `hotel_url`, and `price_value`. Missing optional rating/review/star fields are retained; their coverage is warning-only when it does not exceed the configured threshold.
 
 ## Commit And PR Notes

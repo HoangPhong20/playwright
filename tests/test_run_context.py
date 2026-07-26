@@ -22,6 +22,8 @@ def test_run_context_uses_airflow_identity_without_a_generated_id(tmp_path) -> N
     assert "%3A" in output_dir.as_posix()
     assert "%2B" in output_dir.as_posix()
     assert output_dir.parts[-1] == "attempt=2"
+    assert context.completion_pointer_path(tmp_path).parent == context.batch_directory(tmp_path)
+    assert context.completion_pointer_path(tmp_path).name == "completed_attempt.json"
 
 
 def test_path_safe_identifier_handles_windows_unsafe_characters() -> None:

@@ -36,10 +36,7 @@ from agoda_crawler.listing.scrolling import (
     wait_for_lazy_results,
 )
 from agoda_crawler.utils.crawl_metrics import elapsed_seconds
-from agoda_crawler.utils.debug_artifacts import (
-    save_final_listing_artifacts,
-    save_listing_debug_artifacts,
-)
+from agoda_crawler.utils.debug_artifacts import save_listing_debug_artifacts
 from agoda_crawler.utils.page_helpers import handle_cookie_popup
 
 
@@ -55,7 +52,7 @@ class PageCrawlResult:
 
 @dataclass(frozen=True)
 class ListingWaitResult:
-    snapshot: object
+    snapshot: ListingCollectionSnapshot
     updated_existing: bool
     elapsed_ms: int
     grew: bool
@@ -186,15 +183,6 @@ def crawl_current_results_page(
         full_snapshot=True,
     )
     last_metrics = final_merge_result.snapshot.metrics
-
-    save_final_listing_artifacts(
-        page,
-        page_number,
-        last_metrics,
-        completed_rounds,
-        scroll_metrics,
-        selected_scroll_target,
-    )
 
     page_elapsed_seconds = time.perf_counter() - page_started_at
     should_run_fallback = (

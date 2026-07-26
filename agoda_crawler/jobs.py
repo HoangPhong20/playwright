@@ -37,23 +37,9 @@ def parse_date(value: str) -> date:
 
 
 def iter_stays(args) -> List[tuple[str, str]]:
-    if bool(args.date_start) != bool(args.date_end):
-        raise ValueError("--date-start and --date-end must be used together")
-
-    if args.date_start and args.date_end:
-        current = parse_date(args.date_start)
-        end = parse_date(args.date_end)
-        if end < current:
-            raise ValueError("--date-end must be on or after --date-start")
-
-        stays: List[tuple[str, str]] = []
-        while current <= end:
-            check_out = current + timedelta(days=1)
-            stays.append((current.isoformat(), check_out.isoformat()))
-            current += timedelta(days=1)
-        return stays
-
-    return [(parse_date(args.check_in).isoformat(), parse_date(args.check_out).isoformat())]
+    check_in = parse_date(args.date)
+    check_out = check_in + timedelta(days=1)
+    return [(check_in.isoformat(), check_out.isoformat())]
 
 
 def annotate_record(record: Dict, destination: str, check_in: str, check_out: str) -> Dict:

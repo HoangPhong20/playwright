@@ -196,12 +196,6 @@ def print_verification_summary(
     print(f"VERIFY_COVERAGE_STATUS={coverage_status}")
 
 
-def is_partial_record(record: Dict) -> bool:
-    if record.get("collect_status") and record.get("collect_status") != "ok":
-        return True
-    return not is_publishable_record(record)
-
-
 def write_crawl_results(results: List[CrawlJobResult]) -> None:
     for result in results:
         for record in result.records:

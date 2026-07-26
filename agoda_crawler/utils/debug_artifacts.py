@@ -68,17 +68,6 @@ def save_listing_debug_artifacts(
     log(f"Listing debug saved: {report_path}")
 
 
-def save_final_listing_artifacts(
-    page: Page,
-    page_number: int,
-    metrics: ListingCollectionMetrics,
-    scroll_rounds: int,
-    scroll_metrics: List[Dict],
-    selected_scroll_target: str,
-) -> None:
-    return
-
-
 def update_page_debug_status(page_number: int, status: str, evidence: Optional[Dict] = None) -> None:
     if status == "collected":
         return

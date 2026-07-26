@@ -40,6 +40,13 @@ def write_manifest(tmp_path: Path, **overrides) -> Path:
     manifest.update(overrides)
     manifest_path = run_dir / "run_manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    pointer = {
+        **RUN_CONTEXT.record_metadata(),
+        "manifest_path": str(manifest_path),
+    }
+    RUN_CONTEXT.completion_pointer_path(tmp_path).write_text(
+        json.dumps(pointer), encoding="utf-8"
+    )
     return manifest_path
 
 
@@ -57,6 +64,18 @@ def test_expected_manifest_path_is_scoped_to_batch_and_attempt(tmp_path):
 
     assert path == RUN_CONTEXT.output_directory(tmp_path) / "run_manifest.json"
     assert "attempt=1" in path.as_posix()
+
+
+def test_completed_manifest_path_uses_crawler_attempt_pointer(tmp_path):
+    manifest_path = write_manifest(tmp_path)
+    batch_context = RunContext(RUN_CONTEXT.airflow_dag_id, RUN_CONTEXT.airflow_run_id, 1)
+
+    path, resolved_context = validate_latest_run.completed_manifest_path(
+        tmp_path, batch_context
+    )
+
+    assert path == manifest_path
+    assert resolved_context == RUN_CONTEXT
 
 
 def test_validate_manifest_rejects_other_airflow_run(tmp_path):

@@ -1,0 +1,9 @@
+{
+  "page_number": 4,
+  "pagination_status": "navigation_failed",
+  "url": "https://www.agoda.com/vi-vn/search?city=2679&checkIn=2026-08-16&los=1&rooms=1&adults=2&children=0&checkOut=2026-08-17&textToSearch=Nha+Trang&cid=-1&finalPriceView=1&isShowMobileAppPrice=false&familyMode=false&maxRooms=0&childAges=&numberOfGuest=0&missingChildAges=false&travellerType=1&showReviewSubmissionEntry=false&currencyCode=VND&isFreeOccSearch=false&ds=xJdimx5TxjH2%2FVtc",
+  "pagination_evidence": {
+    "reason": "navigation_control_unavailable",
+    "attempt": 3
+  }
+}

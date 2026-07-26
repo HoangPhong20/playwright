@@ -33,12 +33,19 @@ class RunContext:
         return path_safe_identifier(self.airflow_dag_id)
 
     def output_directory(self, output_root: str | Path) -> Path:
+        return self.batch_directory(output_root) / f"attempt={self.airflow_try_number}"
+
+    def batch_directory(self, output_root: str | Path) -> Path:
+        """Return the stable directory shared by every crawler attempt in a batch."""
         return (
             Path(output_root)
             / f"dag_id={self.path_dag_id}"
             / f"batch_id={self.path_batch_id}"
-            / f"attempt={self.airflow_try_number}"
         )
+
+    def completion_pointer_path(self, output_root: str | Path) -> Path:
+        """Path written only after one crawler attempt has completed."""
+        return self.batch_directory(output_root) / "completed_attempt.json"
 
     def record_metadata(self) -> dict[str, str | int]:
         return {

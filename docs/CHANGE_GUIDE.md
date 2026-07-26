@@ -22,9 +22,14 @@ Phải cập nhật đồng thời:
 
 1. `main.py` cho CLI.
 2. `config.py` cho `.env` override nếu hỗ trợ biến môi trường.
-3. Default trong `orchestration.py` hoặc module sở hữu hành vi.
+3. Default trong `config.py` hoặc module sở hữu hành vi; không đưa default trở
+   lại `orchestration.py`.
 4. Test parser/config trong `tests/test_main.py`.
 5. Tài liệu liên quan trong `docs/`.
+
+Khi thay đổi output, manifest hoặc batch identity, cập nhật thêm
+`run_context.py`, `run_manifest.py`, các script trong `airflow/scripts/` và
+tài liệu Databricks để contract giữa các task không bị lệch.
 
 Không tạo alias cấu hình trùng nghĩa trừ khi có kế hoạch deprecate rõ ràng.
 
@@ -32,10 +37,11 @@ Không tạo alias cấu hình trùng nghĩa trừ khi có kế hoạch deprecat
 
 ```powershell
 python -m pytest
-python main.py --destinations "Vung Tau" `
-  --date-start 2026-08-15 --date-end 2026-08-15 `
-  --max-pages 1 --workers 1 --no-enrich-details `
-  --output-dir data/raw/smoke_after_change
+python main.py --airflow-dag-id adhoc --airflow-run-id smoke_after_change_001 `
+  --airflow-try-number 1 --output-dir data/airflow `
+  --destinations "Vung Tau" `
+  --date 2026-08-15 `
+  --max-pages 1 --workers 1 --no-enrich-details
 ```
 
 Khi thay đổi live crawler, kiểm tra ít nhất: `pages`, `duplicate`, số record, coverage field bắt buộc và timing. Không dùng full crawl làm test đầu tiên.

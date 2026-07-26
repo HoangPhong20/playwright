@@ -5,8 +5,8 @@
 Each execution writes to
 `<output-dir>/dag_id=<id>/batch_id=<id>/attempt=<number>/` with a
 `run_manifest.json` containing Airflow run metadata, effective configuration,
-Git revision, timestamps, and stay summaries. JSONL append behavior is
-isolated to one attempt.
+Git revision, timestamps, and stay summaries. Each attempt directory is
+immutable once it contains output.
 
 `AGODA_DETAIL_CONCURRENCY` limits detail work inside one job.
 `AGODA_TOTAL_DETAIL_CONCURRENCY` limits detail browser workers across all
@@ -30,10 +30,15 @@ CLI / .env
   -> scroll + snapshot + merge/dedupe
   -> verified pagination
   -> optional detail enrichment (detail-concurrency trong từng job)
-  -> filter publishable records -> append JSONL + summary/debug artifacts
+  -> immutable attempt directory -> JSONL + run_manifest.json
+  -> completed_attempt.json -> verify -> upload to Unity Catalog Volume
 ```
 
-`--workers` chỉ song song hóa các city/date job. Một run chỉ có một destination và một ngày chỉ tạo một job, nên giá trị hiệu dụng của `--workers` khi đó là 1. `--detail-concurrency` mới song song hóa các trang hotel detail trong job đó.
+`--workers` chỉ song song hóa các city/date job. Mỗi cặp destination × check-in
+tạo một job; với bốn thành phố và một ngày, run hiện tại có bốn job nên
+`workers=2` có thể chạy hai job song song. `--detail-concurrency` song song hóa
+các trang hotel detail trong từng job; `--total-detail-concurrency` là giới hạn
+chung cho tất cả job.
 
 ## Bản đồ code
 
@@ -42,7 +47,7 @@ CLI / .env
 | `main.py` | Parse CLI rồi gọi orchestration; không đặt business logic ở đây. |
 | `agoda_crawler/config.py` | Đọc `.env`, ưu tiên environment variables và tạo runtime defaults. |
 | `jobs.py` | Parse destination/date, tạo job matrix, annotation và output path. |
-| `orchestration.py` | Chạy outer workers, lọc record thiếu field bắt buộc, ghi JSONL, in summary và cảnh báo coverage. |
+| `orchestration.py` | Chạy outer workers, tạo output immutable theo Airflow run/attempt, ghi manifest, JSONL, summary và completion pointer. |
 | `crawler.py` | Vòng đời một job: search, listing, pagination, enrichment và timing. |
 | `navigation/` | Homepage flow, search, URL và xác minh chuyển trang. |
 | `listing/` | Scroll, snapshot DOM, merge/dedupe record, pagination state. |
@@ -61,7 +66,9 @@ AGODA_WORKERS=2
 AGODA_DETAIL_CONCURRENCY=3
 ```
 
-Chỉ dùng `AGODA_DETAIL_CONCURRENCY` và CLI `--detail-concurrency`. Không thêm lại `AGODA_DETAIL_WORKERS` hay `--detail-workers`.
+Dùng `AGODA_DETAIL_CONCURRENCY` / `--detail-concurrency` cho mỗi job và
+`AGODA_TOTAL_DETAIL_CONCURRENCY` / `--total-detail-concurrency` làm giới hạn
+chung. Không thêm lại `AGODA_DETAIL_WORKERS` hay `--detail-workers`.
 
 Record public phải có `hotel_name`, `hotel_url` và `price_value`. `rating_text`, `review_count_text`, `star_rating_text` là optional; coverage từng field phải lớn hơn `AGODA_MIN_OPTIONAL_COVERAGE` (mặc định `90`) để không có warning. Các warning này không làm job fail.
 
@@ -71,4 +78,5 @@ CLI có độ ưu tiên cao hơn `.env`; environment variable có độ ưu tiê
 
 - Network routing mặc định chặn `image,font,media` và các URL tracking để giảm tải browser.
 - Listing được merge/dedupe giữa các vòng scroll và giữa pagination. Chênh lệch giữa tổng record từng page với tổng cuối có thể là record trùng giữa page.
-- Output JSONL là append-only. Dùng `--output-dir` riêng khi benchmark hoặc rerun để không trộn dữ liệu giữa các lần chạy.
+- Khi benchmark hoặc rerun thủ công, dùng `airflow_run_id` hoặc
+  `airflow_try_number` mới thay vì ghi vào attempt cũ.

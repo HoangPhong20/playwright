@@ -1,2 +1,2 @@
 playwright==1.60.0
-pytest==9.0.3
+databricks-sdk==0.72.0

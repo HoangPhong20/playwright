@@ -17,7 +17,7 @@ from main import parse_args
 
 
 def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["main.py"])
+    monkeypatch.setattr(sys, "argv", ["main.py", "--date", "2026-06-01"])
 
     args = parse_args(env={})
 
@@ -26,8 +26,7 @@ def test_parse_args_defaults_to_enrich_all_details(monkeypatch) -> None:
     assert args.output_dir == "data"
     assert args.max_pages == 5
     assert args.destinations == "Vung Tau,Da Nang,Nha Trang,Ho Chi Minh"
-    assert args.date_start == "2026-06-01"
-    assert args.date_end == "2026-06-30"
+    assert args.date == "2026-06-01"
     assert not hasattr(args, "nights")
     assert args.workers == 3
     assert args.detail_concurrency == 2
@@ -70,7 +69,9 @@ def test_parse_detail_fields_rejects_removed_fields() -> None:
 
 
 def test_parse_args_can_disable_detail_enrichment(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["main.py", "--no-enrich-details"])
+    monkeypatch.setattr(
+        sys, "argv", ["main.py", "--date", "2026-06-01", "--no-enrich-details"]
+    )
 
     args = parse_args(env={})
 
@@ -78,7 +79,11 @@ def test_parse_args_can_disable_detail_enrichment(monkeypatch) -> None:
 
 
 def test_parse_args_accepts_output_dir(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["main.py", "--output-dir", "data/raw/prod"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--date", "2026-06-01", "--output-dir", "data/raw/prod"],
+    )
 
     args = parse_args(env={})
 
@@ -86,7 +91,7 @@ def test_parse_args_accepts_output_dir(monkeypatch) -> None:
 
 
 def test_parse_args_uses_env_defaults(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["main.py"])
+    monkeypatch.setattr(sys, "argv", ["main.py", "--date", "2026-06-01"])
 
     args = parse_args(
         env={
@@ -131,7 +136,16 @@ def test_cli_args_override_env_defaults(monkeypatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
-        ["main.py", "--destination", "Hue", "--max-pages", "1", "--no-headless"],
+        [
+            "main.py",
+            "--date",
+            "2026-06-01",
+            "--destination",
+            "Hue",
+            "--max-pages",
+            "1",
+            "--no-headless",
+        ],
     )
 
     args = parse_args(env={"AGODA_DESTINATION": "Da Nang", "AGODA_MAX_PAGES": "5", "AGODA_HEADLESS": "true"})
@@ -184,24 +198,22 @@ def test_parse_date_accepts_iso_and_vietnamese_format() -> None:
     assert parse_date("01/06/2026").isoformat() == "2026-06-01"
 
 
-def test_iter_stays_builds_one_file_per_check_in_day(monkeypatch) -> None:
+def test_iter_stays_builds_one_overnight_stay(monkeypatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
-        ["main.py", "--date-start", "2026-06-01", "--date-end", "2026-06-03"],
+        ["main.py", "--date", "2026-06-01"],
     )
 
     args = parse_args(env={})
 
-    assert iter_stays(args) == [
-        ("2026-06-01", "2026-06-02"),
-        ("2026-06-02", "2026-06-03"),
-        ("2026-06-03", "2026-06-04"),
-    ]
+    assert iter_stays(args) == [("2026-06-01", "2026-06-02")]
 
 
 def test_parse_args_rejects_removed_nights_option(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["main.py", "--nights", "2"])
+    monkeypatch.setattr(
+        sys, "argv", ["main.py", "--date", "2026-06-01", "--nights", "2"]
+    )
 
     try:
         parse_args(env={})
@@ -211,7 +223,23 @@ def test_parse_args_rejects_removed_nights_option(monkeypatch) -> None:
     raise AssertionError("--nights should not be accepted")
 
 
-def test_build_crawl_jobs_creates_destination_date_matrix(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "legacy_option", ["--date-start", "--date-end", "--date-s"]
+)
+def test_parse_args_rejects_removed_date_range_options(
+    monkeypatch, legacy_option: str
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--date", "2026-06-01", legacy_option, "2026-06-01"],
+    )
+
+    with pytest.raises(SystemExit):
+        parse_args(env={})
+
+
+def test_build_crawl_jobs_creates_destination_matrix_for_one_date(monkeypatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
@@ -219,10 +247,8 @@ def test_build_crawl_jobs_creates_destination_date_matrix(monkeypatch) -> None:
             "main.py",
             "--destinations",
             "Vung Tau,Da Nang,Nha Trang",
-            "--date-start",
+            "--date",
             "2026-06-01",
-            "--date-end",
-            "2026-06-30",
         ],
     )
 
@@ -231,17 +257,17 @@ def test_build_crawl_jobs_creates_destination_date_matrix(monkeypatch) -> None:
     stays = iter_stays(args)
     jobs = build_crawl_jobs(args, destinations, stays)
 
-    assert len(jobs) == 90
+    assert len(jobs) == 3
     assert jobs[0].destination == "Vung Tau"
     assert jobs[0].check_in == "2026-06-01"
     assert jobs[0].check_out == "2026-06-02"
     assert jobs[0].output_path.name == "agoda_hotels_2026-06-01.jsonl"
     assert jobs[-1].destination == "Nha Trang"
-    assert jobs[-1].check_in == "2026-06-30"
+    assert jobs[-1].check_in == "2026-06-01"
 
 
 def test_build_crawl_jobs_uses_the_given_run_directory(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(sys, "argv", ["main.py"])
+    monkeypatch.setattr(sys, "argv", ["main.py", "--date", "2026-06-01"])
     args = parse_args(env={})
 
     jobs = build_crawl_jobs(
@@ -262,10 +288,8 @@ def test_jobs_for_stay_keeps_one_day_batch(monkeypatch) -> None:
             "main.py",
             "--destinations",
             "Vung Tau,Da Nang",
-            "--date-start",
+            "--date",
             "2026-06-01",
-            "--date-end",
-            "2026-06-02",
         ],
     )
 
@@ -286,7 +310,7 @@ def test_ordered_results_restores_destination_order(monkeypatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
-        ["main.py", "--destinations", "Vung Tau,Da Nang"],
+        ["main.py", "--date", "2026-06-01", "--destinations", "Vung Tau,Da Nang"],
     )
 
     args = parse_args(env={})

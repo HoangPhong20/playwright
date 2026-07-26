@@ -2,30 +2,36 @@
 import argparse
 from typing import Dict, Optional
 
-from agoda_crawler.config import DEFAULT_LOCALE, env_bool, env_int, load_config_env
-from agoda_crawler.orchestration import (
-    DEFAULT_DATE_END,
-    DEFAULT_DATE_START,
+from agoda_crawler.config import (
     DEFAULT_DESTINATION,
     DEFAULT_DESTINATIONS,
+    DEFAULT_DETAIL_CONCURRENCY,
     DEFAULT_DETAIL_FIELDS,
     DEFAULT_DETAIL_TIMEOUT,
-    DEFAULT_DETAIL_CONCURRENCY,
-    DEFAULT_TOTAL_DETAIL_CONCURRENCY,
     DEFAULT_FIELD_RETRY_COUNT,
     DEFAULT_FIELD_RETRY_TIMEOUT,
+    DEFAULT_LOCALE,
     DEFAULT_MAX_PAGES,
     DEFAULT_MAX_SCROLL_ROUNDS,
     DEFAULT_SCROLL_WAIT_MS,
     DEFAULT_STABLE_ROUNDS,
+    DEFAULT_TOTAL_DETAIL_CONCURRENCY,
     DEFAULT_WORKERS,
+    env_bool,
+    env_int,
+    load_config_env,
+)
+from agoda_crawler.orchestration import (
     run_from_args,
 )
 
 
 def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
     config = load_config_env() if env is None else env
-    parser = argparse.ArgumentParser(description="Agoda search POC crawler (Playwright sync API)")
+    parser = argparse.ArgumentParser(
+        description="Agoda search POC crawler (Playwright sync API)",
+        allow_abbrev=False,
+    )
     parser.add_argument(
         "--max-pages",
         type=int,
@@ -44,10 +50,11 @@ def parse_args(env: Optional[Dict[str, str]] = None) -> argparse.Namespace:
         default=config.get("AGODA_DESTINATIONS", DEFAULT_DESTINATIONS),
         help="Comma-separated destinations for batch crawl",
     )
-    parser.add_argument("--check-in", default=config.get("AGODA_CHECK_IN", "2026-06-10"), help="Check-in date YYYY-MM-DD")
-    parser.add_argument("--check-out", default=config.get("AGODA_CHECK_OUT", "2026-06-11"), help="Check-out date YYYY-MM-DD")
-    parser.add_argument("--date-start", default=config.get("AGODA_DATE_START", DEFAULT_DATE_START), help="First check-in date for batch crawl")
-    parser.add_argument("--date-end", default=config.get("AGODA_DATE_END", DEFAULT_DATE_END), help="Last check-in date for batch crawl")
+    parser.add_argument(
+        "--date",
+        required=True,
+        help="Check-in date YYYY-MM-DD (check-out is automatically the next day)",
+    )
     parser.add_argument("--adults", type=int, default=env_int(config, "AGODA_ADULTS", 2), help="Number of adults")
     parser.add_argument("--rooms", type=int, default=env_int(config, "AGODA_ROOMS", 1), help="Number of rooms")
     parser.add_argument("--children", type=int, default=env_int(config, "AGODA_CHILDREN", 0), help="Number of children")

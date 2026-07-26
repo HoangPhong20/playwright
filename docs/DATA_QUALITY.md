@@ -5,19 +5,22 @@
 Public JSONL paths are scoped to one execution:
 
 ```text
-<output-dir>/run_<UTC timestamp>_<id>/agoda_hotels_<check-in>.jsonl
+<output-dir>/dag_id=<id>/batch_id=<id>/attempt=<number>/
+  agoda_hotels_<check-in>.jsonl
+  run_manifest.json
 ```
 
-The directory includes `run_manifest.json`; debug diagnostics are under
-`debug/<run-id>/...`. This prevents reruns from mixing output records or
-overwriting pagination evidence from concurrent destinations.
+The directory includes `run_manifest.json`; debug diagnostics are scoped under
+`debug/<batch-id>/<destination>/<check-in>/` and
+`debug/<batch-id>/summary/<check-in>/`. This prevents reruns from mixing output
+records or overwriting pagination evidence from concurrent destinations.
 
 ## Output JSONL
 
 Mỗi dòng là một object JSON. File có tên:
 
 ```text
-<output-dir>/agoda_hotels_<check-in>.jsonl
+<output-dir>/dag_id=<id>/batch_id=<id>/attempt=<number>/agoda_hotels_<check-in>.jsonl
 ```
 
 Các field public:
@@ -25,7 +28,8 @@ Các field public:
 ```text
 hotel_name, hotel_url, price_value, rating_text, review_count_text,
 star_rating_text, crawled_at, destination,
-normalized_destination, check_in, check_out
+normalized_destination, check_in, check_out, batch_id, airflow_dag_id,
+airflow_run_id, airflow_try_number
 ```
 
 Ba field bắt buộc là:
@@ -34,7 +38,10 @@ Ba field bắt buộc là:
 hotel_name, hotel_url, price_value
 ```
 
-Record thiếu một trong ba field này không được ghi vào JSONL public. Nó chỉ được lưu để debug trong `debug/discarded_records.json`; job vẫn kết thúc thành công và ghi cảnh báo trong summary.
+Record thiếu một trong ba field này không được ghi vào JSONL public. Nó chỉ
+được lưu để debug trong
+`debug/<batch-id>/summary/<check-in>/discarded_records.json`; job vẫn kết thúc
+thành công và ghi cảnh báo trong summary.
 
 `rating_text`, `review_count_text`, và `star_rating_text` là optional. Record thiếu các field này vẫn được ghi ra JSONL nếu đủ ba field bắt buộc.
 
@@ -75,4 +82,5 @@ price_value,rating_text,review_count_text
 1. Không đưa record thiếu `hotel_name`, `hotel_url`, hoặc `price_value` vào JSONL public.
 2. Không coi `VERIFY_COVERAGE_STATUS=success` là đủ nếu `pages_collected` thấp hơn page yêu cầu hoặc có duplicate page.
 3. Khi đổi selector/parser, thêm test fixture hoặc fake nhỏ cho format mới.
-4. Không trộn benchmark runs vào cùng output directory vì JSONL append-only.
+4. Không dùng lại cùng `airflow_run_id` và `airflow_try_number` cho benchmark;
+   mỗi attempt directory là immutable.

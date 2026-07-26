@@ -1,8 +1,11 @@
 """CLI orchestration for batch Agoda crawls."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+import json
 import subprocess
 import threading
+import tempfile
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -18,8 +21,6 @@ from agoda_crawler.jobs import (
     iter_stays,
     jobs_for_stay,
     ordered_results,
-    output_path_for_stay,
-    parse_date,
     parse_destinations,
 )
 from agoda_crawler.run_context import RunContext, run_context_from_args
@@ -33,24 +34,9 @@ from agoda_crawler.utils.run_output import (
     write_crawl_results,
     write_latest_outputs,
 )
-from agoda_crawler.utils import append_jsonl, as_json
+from agoda_crawler.utils import as_json
 
 
-DEFAULT_DESTINATION = "Vung Tau"
-DEFAULT_DESTINATIONS = "Vung Tau,Da Nang,Nha Trang,Ho Chi Minh"
-DEFAULT_DATE_START = "2026-06-01"
-DEFAULT_DATE_END = "2026-06-30"
-DEFAULT_MAX_PAGES = 5
-DEFAULT_WORKERS = 3
-DEFAULT_DETAIL_CONCURRENCY = 2
-DEFAULT_TOTAL_DETAIL_CONCURRENCY = 3
-DEFAULT_DETAIL_TIMEOUT = 30_000
-DEFAULT_FIELD_RETRY_TIMEOUT = 1_500
-DEFAULT_FIELD_RETRY_COUNT = 2
-DEFAULT_MAX_SCROLL_ROUNDS = 80
-DEFAULT_STABLE_ROUNDS = 3
-DEFAULT_SCROLL_WAIT_MS = 1_000
-DEFAULT_DETAIL_FIELDS = "price_value,rating_text,review_count_text"
 ALLOWED_DETAIL_FIELDS = {
     "price_value",
     "rating_text",
@@ -70,12 +56,10 @@ def parse_detail_fields(value: str) -> tuple[str, ...]:
 def run_crawl_job_batch(
     jobs: List[CrawlJob],
     args,
-    write_output: bool = True,
-    run_context: Optional[RunContext] = None,
-    detail_worker_semaphore: Optional[threading.BoundedSemaphore] = None,
+    run_context: RunContext,
+    detail_worker_semaphore: threading.BoundedSemaphore,
+    detail_fields: tuple[str, ...],
 ) -> List[CrawlJobResult]:
-    if run_context is None:
-        raise ValueError("run_context is required")
     results: List[CrawlJobResult] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless)
@@ -106,7 +90,7 @@ def run_crawl_job_batch(
                         field_retry_timeout=max(0, args.field_retry_timeout),
                         field_retry_count=max(0, args.field_retry_count),
                         detail_worker_semaphore=detail_worker_semaphore,
-                        detail_fields=parse_detail_fields(args.detail_fields),
+                        detail_fields=detail_fields,
                         max_scroll_rounds=max(1, args.max_scroll_rounds),
                         stable_rounds=max(1, args.stable_rounds),
                         scroll_wait_ms=max(0, args.scroll_wait_ms),
@@ -123,8 +107,6 @@ def run_crawl_job_batch(
                     annotated.update(run_context.record_metadata())
                     if args.print_records:
                         print(as_json(project_output_record(annotated)))
-                    if write_output and is_publishable_record(annotated):
-                        append_jsonl(job.output_path, project_output_record(annotated))
                     annotated_records.append(annotated)
                 results.append(CrawlJobResult(job=job, records=annotated_records))
         finally:
@@ -138,14 +120,15 @@ def run_crawl_jobs_for_stay(
     worker_count: int,
     run_context: RunContext,
     detail_worker_semaphore: threading.BoundedSemaphore,
+    detail_fields: tuple[str, ...],
 ) -> List[CrawlJobResult]:
     if worker_count == 1:
         results = run_crawl_job_batch(
             jobs,
             args,
-            write_output=False,
-            run_context=run_context,
-            detail_worker_semaphore=detail_worker_semaphore,
+            run_context,
+            detail_worker_semaphore,
+            detail_fields,
         )
     else:
         results = []
@@ -156,9 +139,9 @@ def run_crawl_jobs_for_stay(
                     run_crawl_job_batch,
                     batch,
                     args,
-                    False,
                     run_context,
                     detail_worker_semaphore,
+                    detail_fields,
                 )
                 for batch in batches
             ]
@@ -170,16 +153,17 @@ def run_crawl_jobs_for_stay(
     return results
 
 
-def run_from_args(args) -> None:
+def _run_from_args(args) -> None:
     destinations = parse_destinations(args.destinations, args.destination)
     stays = iter_stays(args)
     run_context = run_context_from_args(args)
     run_output_dir = run_context.output_directory(args.output_dir)
-    run_output_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_run_output_directory(run_output_dir)
     jobs = build_crawl_jobs(args, destinations, stays, output_dir=run_output_dir)
     manifest_path = run_output_dir / "run_manifest.json"
     manifest = _new_run_manifest(run_context, args, destinations, stays)
     _write_run_manifest(manifest_path, manifest)
+    detail_fields = parse_detail_fields(args.detail_fields)
     detail_worker_semaphore = threading.BoundedSemaphore(
         max(1, args.total_detail_concurrency)
     )
@@ -210,7 +194,7 @@ def run_from_args(args) -> None:
     print()
 
     for check_in, check_out in stays:
-        stay_started_at = datetime.now()
+        stay_started_at = time.perf_counter()
         stay_jobs = jobs_for_stay(jobs, check_in)
         worker_count = max(1, min(args.workers, len(stay_jobs)))
         output_path = stay_jobs[0].output_path
@@ -225,6 +209,7 @@ def run_from_args(args) -> None:
             worker_count,
             run_context,
             detail_worker_semaphore,
+            detail_fields,
         )
         stay_records = [
             record
@@ -246,7 +231,7 @@ def run_from_args(args) -> None:
                 f"{len(public_records)} publishable"
             )
         summarize(public_records)
-        elapsed_seconds = int((datetime.now() - stay_started_at).total_seconds())
+        elapsed_seconds = int(time.perf_counter() - stay_started_at)
         print_verification_summary(public_records, elapsed_seconds, discarded_records)
         print(f"Saved JSONL: {output_path}\n")
         manifest["stays"].append(
@@ -254,6 +239,7 @@ def run_from_args(args) -> None:
                 "check_in": check_in,
                 "check_out": check_out,
                 "output_path": str(output_path),
+                "output_file": output_path.name,
                 "records": len(stay_records),
                 "publishable_records": len(public_records),
                 "discarded_records": len(discarded_records),
@@ -265,6 +251,16 @@ def run_from_args(args) -> None:
     manifest["status"] = "complete"
     manifest["finished_at"] = _utc_now()
     _write_run_manifest(manifest_path, manifest)
+    _write_completed_attempt_pointer(run_context, args.output_dir, manifest_path)
+
+
+def run_from_args(args) -> None:
+    """Run one immutable crawler attempt and record a terminal manifest state."""
+    try:
+        _run_from_args(args)
+    except Exception as error:
+        _mark_failed_run(args, error)
+        raise
 
 
 def _job_log_prefix(job: CrawlJob) -> str:
@@ -298,6 +294,65 @@ def _new_run_manifest(
 
 def _write_run_manifest(path: Path, manifest: Dict) -> None:
     path.write_text(as_json(manifest), encoding="utf-8")
+
+
+def _prepare_run_output_directory(run_output_dir: Path) -> None:
+    """Prevent a manual rerun from appending into an existing attempt."""
+    if run_output_dir.exists() and any(run_output_dir.iterdir()):
+        raise FileExistsError(
+            "Crawler attempt output already exists: "
+            f"{run_output_dir}. Use a new Airflow run ID or try number."
+        )
+    run_output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _mark_failed_run(args, error: Exception) -> None:
+    """Persist failure metadata when the initial manifest was already created."""
+    try:
+        run_context = run_context_from_args(args)
+        manifest_path = run_context.output_directory(args.output_dir) / "run_manifest.json"
+        if not manifest_path.is_file():
+            return
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("status") == "complete":
+            return
+        manifest["status"] = "failed"
+        manifest["finished_at"] = _utc_now()
+        manifest["error"] = f"{type(error).__name__}: {error}"
+        _write_run_manifest(manifest_path, manifest)
+    except (OSError, ValueError, json.JSONDecodeError):
+        # The original crawler exception remains the most actionable failure.
+        return
+
+
+def _write_completed_attempt_pointer(
+    run_context: RunContext,
+    output_root: str | Path,
+    manifest_path: Path,
+) -> None:
+    """Publish the completed crawler attempt for downstream Airflow tasks.
+
+    Downstream tasks have their own retry counters, so they cannot infer the
+    crawler attempt from their own ``ti.try_number`` values.
+    """
+    pointer_path = run_context.completion_pointer_path(output_root)
+    pointer_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        **run_context.record_metadata(),
+        "manifest_path": str(manifest_path),
+    }
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=pointer_path.parent,
+        prefix=f".{pointer_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as temporary:
+        json.dump(payload, temporary, ensure_ascii=False, sort_keys=True)
+        temporary.write("\n")
+        temporary_path = Path(temporary.name)
+    temporary_path.replace(pointer_path)
 
 
 def _utc_now() -> str:

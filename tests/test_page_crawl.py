@@ -48,12 +48,6 @@ def test_crawl_current_results_page_honors_scroll_wait_ms(monkeypatch) -> None:
         "wait_for_listing_growth",
         fake_wait_for_listing_growth,
     )
-    monkeypatch.setattr(
-        page_crawl,
-        "save_final_listing_artifacts",
-        lambda *args, **kwargs: None,
-    )
-
     page_crawl.crawl_current_results_page(
         _FakePage(),
         '[data-selenium="hotel-item"]',

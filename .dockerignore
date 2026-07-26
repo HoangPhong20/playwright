@@ -16,3 +16,6 @@ airflow/logs/
 docs/
 AGENTS.md
 README.md
+tests/
+pytest.ini
+requirements-dev.txt

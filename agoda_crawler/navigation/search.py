@@ -9,15 +9,12 @@ from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeout
 from agoda_crawler.utils.logging import log, log_ignored_error
 from agoda_crawler.navigation.urls import (
     build_city_search_urls as _build_city_search_urls,
-    decode_js_url as _decode_js_url,
     destination_pattern as _destination_pattern,
     find_city_search_url as _find_city_search_url,
     normalize_agoda_destination,
     parse_iso_date as _parse_iso_date,
     search_url_label as _search_url_label,
     url_targets_page as _url_targets_page,
-    with_search_dates as _with_search_dates,
-    city_search_url_bases as _city_search_url_bases,
 )
 from agoda_crawler.utils.page_helpers import handle_cookie_popup, wait_for_cards
 from agoda_crawler.extraction.selectors import (
