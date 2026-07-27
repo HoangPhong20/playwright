@@ -11,6 +11,41 @@ Airflow crawl
   -> Bronze -> Silver -> Gold
 ```
 
+## Project flow
+
+```mermaid
+flowchart TD
+    A[Agoda website] --> B[Playwright crawler]
+    B --> C[JSONL output<br/>run_manifest.json]
+
+    subgraph Docker[Docker Compose]
+        D[Apache Airflow]
+        D1[crawl_agoda]
+        D2[verify_output]
+        D3[upload_to_uc_volume]
+        D4[trigger_databricks_job]
+        D5[cleanup_local_output]
+        D --> D1 --> D2 --> D3 --> D4 --> D5
+    end
+
+    C --> D1
+    D3 --> E[Unity Catalog Volume<br/>/Volumes/agoda/raw/crawler]
+    D4 --> F[Databricks Job]
+    E --> F
+
+    subgraph Databricks[Databricks / Unity Catalog]
+        F --> G[Bronze<br/>Raw records + ingestion ledger]
+        G --> H[Silver<br/>Typed hotel history]
+        H --> I[Gold<br/>Analytics tables]
+    end
+
+    I --> J[Dashboard / analysis]
+```
+
+Each Airflow run creates a manifest that identifies its JSONL files. Airflow passes
+the uploaded `manifest_path` to Databricks, so Bronze, Silver, and Gold process the
+same batch deterministically.
+
 ## 1. Điều kiện cần
 
 - Docker Desktop chạy Linux containers.
