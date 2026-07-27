@@ -40,7 +40,7 @@ từ file `../.env`; file này không được copy vào image và không đư�
 
 ## 2. Lịch ngày crawl và manual trigger
 
-DAG chạy lúc 08:00 mỗi ngày theo `Asia/Ho_Chi_Minh`. Mỗi scheduled run crawl
+DAG chạy lúc 04:15 mỗi ngày theo `Asia/Ho_Chi_Minh`. Mỗi scheduled run crawl
 đúng một check-in date bằng ngày kết thúc data interval của Airflow cộng 21 ngày;
 check-out là ngày kế tiếp. DAG không còn đọc Variables `agoda_check_in` hoặc
 `agoda_check_out`.
@@ -55,17 +55,43 @@ Khi cần đổi số ngày lead, nhập JSON sau trong trigger dialog:
 Ví dụ trên crawl ngày của chính Airflow interval. Retry giữ nguyên interval và
 check-in date, nên không làm ngày bị tăng thêm.
 
-DAG có bốn task:
+DAG có năm task:
 
 1. `crawl_agoda` chạy `main.py --date`; check-out được crawler tự tính là ngày kế tiếp.
 2. `verify_output` kiểm tra manifest hoàn tất, JSONL không rỗng và có ít nhất một record publishable.
 3. `upload_to_uc_volume` đưa JSONL và manifest lên `/Volumes/agoda/raw/crawler`; manifest được upload cuối cùng.
-4. `cleanup_local_output` chỉ xóa output local đã upload thành công quá 14 ngày.
+4. `trigger_databricks_job` truyền remote `run_manifest.json` của đúng batch vào
+   một Databricks Job và chờ Bronze -> Silver -> Gold hoàn tất.
+5. `cleanup_local_output` chỉ xóa output local đã upload thành công quá 14 ngày.
+
+## Kiến trúc Databricks mục tiêu
+
+Databricks Job, không phải Airflow, là nơi điều phối các bước xử lý dữ liệu:
+
+```text
+Bronze ingest -> Silver history -> Gold metrics
+```
+
+Airflow chỉ trigger một Databricks Job sau khi `upload_to_uc_volume` thành công
+và truyền một `manifest_path` cụ thể. Databricks Job đọc duy nhất các JSONL
+được manifest khai báo; không quét toàn bộ Volume.
+
+Luồng Airflow mục tiêu sau khi thêm task trigger là:
+
+```text
+crawl_agoda -> verify_output -> upload_to_uc_volume
+  -> trigger_databricks_job -> cleanup_local_output
+```
+
+`trigger_databricks_job` dùng `upload_receipt.json` của crawler attempt hiện tại
+để truyền đúng remote `run_manifest.json`. Task chờ Databricks Job hoàn tất;
+nếu Job thất bại thì Airflow không chạy cleanup cho DAG run đó.
 
 Each Airflow run writes to an isolated `dag_id=<id>/batch_id=<id>/attempt=<n>`
-directory below `data/airflow/`. Every JSONL record and manifest includes the
-Airflow batch metadata. Đặt `DATABRICKS_HOST`, `DATABRICKS_TOKEN` và
-`DATABRICKS_UC_VOLUME_PATH` trong root `.env` trước khi chạy DAG; xem
+directory below `data/airflow/`. JSONL contains crawl business fields only;
+`run_manifest.json` contains Airflow batch metadata. Đặt `DATABRICKS_HOST`, `DATABRICKS_TOKEN`,
+`DATABRICKS_UC_VOLUME_PATH`, `DATABRICKS_JOB_ID` và
+`DATABRICKS_JOB_TIMEOUT_SECONDS` trong root `.env` trước khi chạy DAG; xem
 `../docs/DATABRICKS_INGESTION.md` để biết layout và hợp đồng loader.
 
 ## Cấu hình DAG trong `.env`
@@ -73,7 +99,7 @@ Airflow batch metadata. Đặt `DATABRICKS_HOST`, `DATABRICKS_TOKEN` và
 Không cần sửa Python để đổi các giá trị vận hành sau:
 
 ```dotenv
-AGODA_AIRFLOW_SCHEDULE="0 8 * * *"
+AGODA_AIRFLOW_SCHEDULE="15 4 * * *"
 AGODA_AIRFLOW_TIMEZONE=Asia/Ho_Chi_Minh
 AGODA_CHECK_IN_OFFSET_DAYS=21
 AGODA_AIRFLOW_OUTPUT_DIR=data/airflow

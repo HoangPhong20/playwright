@@ -91,6 +91,17 @@ with DAG(
         cwd="/opt/airflow/app",
     )
 
+    trigger_databricks_job = BashOperator(
+        task_id="trigger_databricks_job",
+        bash_command=(
+            "python airflow/scripts/trigger_databricks_job.py "
+            f'--output-dir "{RUN_OUTPUT_ROOT}" '
+            '--airflow-dag-id "{{ dag.dag_id }}" '
+            '--airflow-run-id "{{ run_id }}"'
+        ),
+        cwd="/opt/airflow/app",
+    )
+
     cleanup_local_output = BashOperator(
         task_id="cleanup_local_output",
         bash_command=(
@@ -103,4 +114,4 @@ with DAG(
         cwd="/opt/airflow/app",
     )
 
-    crawl_agoda >> verify_output >> upload_to_uc_volume >> cleanup_local_output
+    crawl_agoda >> verify_output >> upload_to_uc_volume >> trigger_databricks_job >> cleanup_local_output

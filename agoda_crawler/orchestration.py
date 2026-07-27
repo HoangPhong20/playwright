@@ -104,7 +104,6 @@ def run_crawl_job_batch(
                         job.check_in,
                         job.check_out,
                     )
-                    annotated.update(run_context.record_metadata())
                     if args.print_records:
                         print(as_json(project_output_record(annotated)))
                     annotated_records.append(annotated)

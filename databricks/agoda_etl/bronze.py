@@ -1,0 +1,143 @@
+"""Manifest-driven, idempotent Bronze ingestion for Agoda JSONL files."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import logging
+import uuid
+from pathlib import PurePosixPath
+
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
+
+from . import config, runtime, schemas
+
+
+logger = logging.getLogger(__name__)
+
+
+def _is_loaded(spark: SparkSession, batch_id: str, file_path: str) -> bool:
+    return (
+        spark.table(config.LEDGER_TABLE)
+        .where((F.col("batch_id") == batch_id) & (F.col("file_path") == file_path))
+        .where(F.col("status") == "loaded")
+        .limit(1)
+        .count()
+        > 0
+    )
+
+
+def _upsert_ledger(
+    spark: SparkSession,
+    manifest: dict,
+    manifest_path: PurePosixPath,
+    file_path: str,
+    status: str,
+    row_count: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    now = datetime.now(timezone.utc)
+    update = spark.createDataFrame(
+        [
+            (
+                manifest["batch_id"], file_path, str(manifest_path), config.BRONZE_TABLE, status, now,
+                now if status == "loaded" else None, row_count, error_message,
+            )
+        ],
+        "batch_id string, file_path string, manifest_path string, target_table string, status string, "
+        "started_at timestamp, loaded_at timestamp, row_count long, error_message string",
+    )
+    view_name = f"agoda_ledger_update_{uuid.uuid4().hex}"
+    update.createOrReplaceTempView(view_name)
+    spark.sql(
+        f"""
+        MERGE INTO {config.LEDGER_TABLE} AS target
+        USING {view_name} AS source
+        ON target.batch_id = source.batch_id AND target.file_path = source.file_path
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
+        """
+    )
+
+
+def _stage_jsonl(
+    spark: SparkSession,
+    file_path: str,
+    manifest: dict,
+    manifest_path: PurePosixPath,
+) -> DataFrame:
+    # A fixed business-only schema ignores Airflow metadata present in legacy JSONL.
+    source = spark.read.schema(schemas.CRAWLER_OUTPUT_SCHEMA).json(file_path)
+    payload = [
+        F.coalesce(F.col(column).cast("string"), F.lit(""))
+        for column in config.BUSINESS_OUTPUT_COLUMNS
+    ]
+    return (
+        source.select(
+            *[F.col(column) for column in config.BUSINESS_OUTPUT_COLUMNS],
+            F.lit(manifest["batch_id"]).alias("batch_id"),
+            F.lit(manifest["airflow_dag_id"]).alias("airflow_dag_id"),
+            F.lit(manifest["airflow_run_id"]).alias("airflow_run_id"),
+            F.lit(manifest["airflow_try_number"]).cast("long").alias("airflow_try_number"),
+            F.lit(file_path).alias("source_file_path"),
+            F.lit(str(manifest_path)).alias("manifest_path"),
+            F.sha2(F.concat_ws("\u001f", *payload), 256).alias("record_hash"),
+            F.current_timestamp().alias("ingested_at"),
+        )
+        .select(
+            F.sha2(
+                F.concat_ws("\u001f", F.col("batch_id"), F.col("source_file_path"), F.col("record_hash")),
+                256,
+            ).alias("record_id"),
+            "record_hash",
+            *config.OUTPUT_COLUMNS,
+            "source_file_path",
+            "manifest_path",
+            "ingested_at"
+        )
+        .dropDuplicates(["record_id"])
+    )
+
+
+def run_bronze_ingestion(spark: SparkSession, manifest_path: str) -> dict:
+    """Load each manifest JSONL file exactly once into the Bronze Delta table."""
+    manifest, location, source_files = runtime.read_completed_manifest(spark, manifest_path)
+    runtime.require_tables(spark, config.BRONZE_TABLE, config.LEDGER_TABLE)
+    loaded_files = 0
+    skipped_files = 0
+
+    for source_file in source_files:
+        if _is_loaded(spark, manifest["batch_id"], source_file):
+            skipped_files += 1
+            continue
+        try:
+            _upsert_ledger(spark, manifest, location, source_file, "loading")
+            staged = _stage_jsonl(spark, source_file, manifest, location)
+            row_count = staged.count()
+            if row_count < 1:
+                raise ValueError(f"JSONL file is empty: {source_file}")
+            stage_view_name = f"agoda_bronze_stage_{uuid.uuid4().hex}"
+            staged.createOrReplaceTempView(stage_view_name)
+            spark.sql(
+                f"""
+                MERGE INTO {config.BRONZE_TABLE} AS target
+                USING {stage_view_name} AS source
+                ON target.record_id = source.record_id
+                WHEN NOT MATCHED THEN INSERT *
+                """
+            )
+            _upsert_ledger(spark, manifest, location, source_file, "loaded", row_count=row_count)
+            loaded_files += 1
+        except Exception as error:
+            _upsert_ledger(spark, manifest, location, source_file, "failed", error_message=str(error)[:4000])
+            raise
+
+    result = {
+        "status": "success", "batch_id": manifest["batch_id"],
+        "airflow_dag_id": manifest["airflow_dag_id"],
+        "airflow_run_id": manifest["airflow_run_id"],
+        "airflow_try_number": manifest["airflow_try_number"],
+        "files_loaded": loaded_files, "files_skipped": skipped_files,
+    }
+    logger.info("Bronze ingestion complete: %s", result)
+    return result

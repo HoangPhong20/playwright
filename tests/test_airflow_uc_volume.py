@@ -3,6 +3,9 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+from types import SimpleNamespace
+
+import pytest
 
 from agoda_crawler.run_context import RunContext
 
@@ -21,6 +24,7 @@ def load_script(name: str):
 
 upload_to_uc_volume = load_script("upload_to_uc_volume")
 cleanup_local_output = load_script("cleanup_local_output")
+trigger_databricks_job = load_script("trigger_databricks_job")
 
 RUN_CONTEXT = RunContext(
     "agoda_daily_crawl", "manual__2026-07-25T08:00:00+07:00", 2
@@ -70,6 +74,35 @@ class FakeWorkspaceClient:
         self.files = FakeFiles()
 
 
+class FakeJobWaiter:
+    def __init__(self, run_id: int, result_state: str = "SUCCESS") -> None:
+        self.response = SimpleNamespace(run_id=run_id)
+        self.completed_run = SimpleNamespace(
+            run_id=run_id,
+            state=SimpleNamespace(result_state=result_state, state_message="test state"),
+        )
+        self.timeout = None
+
+    def result(self, timeout):
+        self.timeout = timeout
+        return self.completed_run
+
+
+class FakeJobs:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.waiter = FakeJobWaiter(run_id=12345)
+
+    def run_now(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.waiter
+
+
+class FakeDatabricksClient:
+    def __init__(self) -> None:
+        self.jobs = FakeJobs()
+
+
 def test_uploads_jsonl_before_manifest_and_writes_local_receipt(tmp_path):
     run_dir = write_complete_attempt(tmp_path)
     client = FakeWorkspaceClient()
@@ -89,6 +122,67 @@ def test_uploads_jsonl_before_manifest_and_writes_local_receipt(tmp_path):
     ]
     assert all(upload[2] is True for upload in client.files.uploads)
     assert (run_dir / "upload_receipt.json").is_file()
+
+
+def test_trigger_uses_uploaded_receipt_and_waits_for_databricks_success(tmp_path):
+    write_complete_attempt(tmp_path)
+    upload_to_uc_volume.upload_batch(
+        tmp_path,
+        RUN_CONTEXT.airflow_dag_id,
+        RUN_CONTEXT.airflow_run_id,
+        "/Volumes/agoda/raw/crawler",
+        FakeWorkspaceClient(),
+    )
+    client = FakeDatabricksClient()
+
+    result = trigger_databricks_job.trigger_databricks_job(
+        tmp_path,
+        RUN_CONTEXT.airflow_dag_id,
+        RUN_CONTEXT.airflow_run_id,
+        "/Volumes/agoda/raw/crawler",
+        job_id=999,
+        timeout_seconds=60,
+        workspace_client=client,
+    )
+
+    call = client.jobs.calls[0]
+    assert call["job_id"] == 999
+    assert call["job_parameters"] == {
+        "manifest_path": "/Volumes/agoda/raw/crawler/dag_id=agoda_daily_crawl/"
+        "batch_id=agoda_daily_crawl__manual__2026-07-25T08%3A00%3A00%2B07%3A00/"
+        "attempt=2/run_manifest.json"
+    }
+    assert call["idempotency_token"] == trigger_databricks_job.idempotency_token(
+        RUN_CONTEXT.airflow_dag_id, RUN_CONTEXT.airflow_run_id
+    )
+    assert client.jobs.waiter.timeout.total_seconds() == 60
+    assert result["databricks_run_id"] == 12345
+
+
+def test_trigger_rejects_receipt_for_another_batch(tmp_path):
+    run_dir = write_complete_attempt(tmp_path)
+    upload_to_uc_volume.upload_batch(
+        tmp_path,
+        RUN_CONTEXT.airflow_dag_id,
+        RUN_CONTEXT.airflow_run_id,
+        "/Volumes/agoda/raw/crawler",
+        FakeWorkspaceClient(),
+    )
+    receipt_path = run_dir / "upload_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["batch_id"] = "another-batch"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="batch_id"):
+        trigger_databricks_job.trigger_databricks_job(
+            tmp_path,
+            RUN_CONTEXT.airflow_dag_id,
+            RUN_CONTEXT.airflow_run_id,
+            "/Volumes/agoda/raw/crawler",
+            job_id=999,
+            timeout_seconds=60,
+            workspace_client=FakeDatabricksClient(),
+        )
 
 
 def test_cleanup_only_removes_old_attempts_with_a_receipt(tmp_path):

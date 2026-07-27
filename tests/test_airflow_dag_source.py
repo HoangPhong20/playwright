@@ -17,5 +17,6 @@ def test_dag_uses_a_daily_schedule_and_interval_based_check_in() -> None:
     assert "agoda_check_in" not in source
     assert "agoda_check_out" not in source
     assert "upload_to_uc_volume" in source
+    assert "trigger_databricks_job" in source
     assert "cleanup_local_output" in source
-    assert "crawl_agoda >> verify_output >> upload_to_uc_volume >> cleanup_local_output" in source
+    assert "crawl_agoda >> verify_output >> upload_to_uc_volume >> trigger_databricks_job >> cleanup_local_output" in source

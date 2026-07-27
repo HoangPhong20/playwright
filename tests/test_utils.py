@@ -1,6 +1,8 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
+from agoda_crawler.jobs import CrawlJob, CrawlJobResult
 from agoda_crawler.utils import append_jsonl
 from agoda_crawler.utils.debug_artifacts import debug_directory, debug_run_context
 from agoda_crawler.utils.logging import log_ignored_error, log_prefix
@@ -9,6 +11,7 @@ from agoda_crawler.utils.run_output import (
     optional_coverage_status,
     print_verification_summary,
     project_output_record,
+    write_crawl_results,
 )
 
 
@@ -54,6 +57,10 @@ def test_project_output_record_removes_debug_fields() -> None:
         "normalized_destination": "Vung Tau",
         "check_in": "2026-06-10",
         "check_out": "2026-06-11",
+        "batch_id": "agoda_daily_crawl__manual__demo",
+        "airflow_dag_id": "agoda_daily_crawl",
+        "airflow_run_id": "manual__demo",
+        "airflow_try_number": 1,
         "canonical_url": "https://www.agoda.com/demo/hotel/demo.html",
         "candidate_urls": ["https://www.agoda.com/demo/hotel/demo.html?cid=1"],
         "_listing_scroll_round": 12,
@@ -75,16 +82,41 @@ def test_project_output_record_removes_debug_fields() -> None:
         "normalized_destination",
         "check_in",
         "check_out",
-        "batch_id",
-        "airflow_dag_id",
-        "airflow_run_id",
-        "airflow_try_number",
     ]
     assert "canonical_url" not in output
     assert "candidate_urls" not in output
     assert "_listing_scroll_round" not in output
     assert "_pagination" not in output
     assert "_timing" not in output
+    assert "batch_id" not in output
+    assert "airflow_dag_id" not in output
+    assert "airflow_run_id" not in output
+    assert "airflow_try_number" not in output
+
+
+def test_jsonl_output_excludes_airflow_metadata(tmp_path) -> None:
+    output_path = tmp_path / "agoda_hotels_2026-06-10.jsonl"
+    job = CrawlJob("Vung Tau", "2026-06-10", "2026-06-11", output_path)
+    record = {
+        "hotel_name": "Demo Hotel",
+        "hotel_url": "https://www.agoda.com/demo/hotel/demo.html",
+        "price_value": "1000000",
+        "destination": "Vung Tau",
+        "normalized_destination": "Vung Tau",
+        "check_in": "2026-06-10",
+        "check_out": "2026-06-11",
+        "batch_id": "agoda_daily_crawl__manual__demo",
+        "airflow_dag_id": "agoda_daily_crawl",
+        "airflow_run_id": "manual__demo",
+        "airflow_try_number": 1,
+    }
+
+    write_crawl_results([CrawlJobResult(job, [record])])
+
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    assert saved["hotel_name"] == "Demo Hotel"
+    for field in ("batch_id", "airflow_dag_id", "airflow_run_id", "airflow_try_number"):
+        assert field not in saved
 
 
 def test_only_name_url_and_price_are_required_for_public_output() -> None:

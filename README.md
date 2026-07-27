@@ -1,265 +1,244 @@
-# Agoda Playwright Crawler
+# Agoda hotel data pipeline
 
-Crawler Python/Playwright để thu thập kết quả khách sạn Agoda theo nhiều
-thành phố và ngày check-in. Output chính là JSONL theo ngày, phù hợp cho
-phân tích giá, rating, review và số sao.
-
-## Quick Start
-
-Chạy pipeline chính qua Airflow từ thư mục dự án:
-
-```powershell
-cd D:\DE\databrick\playwright
-docker compose -f airflow/docker-compose.yml build
-docker compose -f airflow/docker-compose.yml up -d
-```
-
-Mở <http://localhost:8080> và trigger DAG `agoda_daily_crawl`. Cấu hình
-crawler và lịch chạy nằm trong root `.env`.
-
-Các default crawler hiện tại:
+Pipeline thu thập khách sạn Agoda bằng Playwright, điều phối bằng Airflow và
+xử lý dữ liệu trên Databricks Unity Catalog.
 
 ```text
+Airflow crawl
+  -> verify JSONL + manifest
+  -> upload UC Volume
+  -> trigger Databricks Job
+  -> Bronze -> Silver -> Gold
+```
+
+## 1. Điều kiện cần
+
+- Docker Desktop chạy Linux containers.
+- Databricks workspace có Unity Catalog Volume:
+  `/Volumes/agoda/raw/crawler`.
+- Một Databricks Job gồm ba notebook tasks: Bronze, Silver và Gold.
+- Token Databricks có API scopes `files` và `jobs`; token owner có quyền
+  `Can Manage Run` trên Job.
+
+## 2. Cấu hình root `.env`
+
+Tạo hoặc cập nhật file `.env` tại root dự án. Không commit file này.
+
+```dotenv
+# Crawler
 AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang,Ho Chi Minh
 AGODA_MAX_PAGES=5
 AGODA_HEADLESS=true
-AGODA_WORKERS=2
-AGODA_DETAIL_CONCURRENCY=3
-AGODA_TOTAL_DETAIL_CONCURRENCY=3
+
+# Airflow
+AIRFLOW_UID=50000
+_AIRFLOW_WWW_USER_USERNAME=<airflow-user>
+_AIRFLOW_WWW_USER_PASSWORD=<airflow-password>
+AIRFLOW__CORE__FERNET_KEY=<fernet-key>
+AIRFLOW__API_AUTH__JWT_SECRET=<jwt-secret>
+AGODA_AIRFLOW_SCHEDULE="15 4 * * *"
+AGODA_AIRFLOW_TIMEZONE=Asia/Ho_Chi_Minh
+AGODA_CHECK_IN_OFFSET_DAYS=21
+AGODA_AIRFLOW_OUTPUT_DIR=data/airflow
+AGODA_LOCAL_RETENTION_DAYS=14
+
+# Databricks
+DATABRICKS_HOST=https://<workspace-host>
+DATABRICKS_TOKEN=<token-with-files-and-jobs-scopes>
+DATABRICKS_UC_VOLUME_PATH=/Volumes/agoda/raw/crawler
+DATABRICKS_JOB_ID=<job-id>
+DATABRICKS_JOB_TIMEOUT_SECONDS=3600
 ```
 
-`AGODA_MAX_PAGES=5` nghĩa là crawl tối đa 5 result pages cho mỗi city/date job.
+DAG chạy lúc **04:15** mỗi ngày theo `Asia/Ho_Chi_Minh`. Mỗi scheduled run
+crawl một ngày check-in bằng cuối Airflow data interval cộng 21 ngày; check-out
+tự động là ngày kế tiếp.
 
-## Airflow batch identity
+## 3. Setup Databricks một lần
 
-When run through Airflow, the crawler does not create a UUID run ID. Every
-invocation must provide `--airflow-dag-id`, `--airflow-run-id`, and
-`--airflow-try-number`. Those values produce a deterministic `batch_id`, add
-provenance fields to every public JSONL record, and isolate retry output under
-`dag_id=<id>/batch_id=<id>/attempt=<number>/`.
+### Upload source
 
-For a manual invocation, provide explicit values, for example:
-
-```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id manual_20260725_001 `
-  --airflow-try-number 1 --date 2026-08-15
-```
-
-See `docs/DATABRICKS_INGESTION.md` for the manifest and ingestion-ledger
-contract used to avoid loading one batch twice.
-
-Each invocation writes to a deterministic Airflow batch directory:
+Upload toàn bộ thư mục `databricks/` vào Workspace, ví dụ:
 
 ```text
-<output-dir>/dag_id=<id>/batch_id=<id>/attempt=<number>/
-  run_manifest.json
-  agoda_hotels_<check-in>.jsonl
+/Workspace/Users/<your-email>/databricks
 ```
 
-`run_manifest.json` stores Airflow run metadata, timestamps, effective
-CLI/.env config, Git revision, and per-stay summary. This prevents a retry
-from mixing JSONL records with an earlier attempt.
+Không upload `__pycache__/` hoặc file `.pyc`.
 
-Pagination never uses a constructed page URL. A page is accepted only after
-listing content changes (canonical hotel URLs or first hotel identity), not
-merely because the browser URL changed. Diagnostics are isolated in
-`debug/<batch-id>/<destination>/<check-in>/`.
+### Tạo Unity Catalog tables
 
-`--detail-concurrency` is the maximum inside one crawl job.
-`--total-detail-concurrency` / `AGODA_TOTAL_DETAIL_CONCURRENCY` is the global
-cap across all jobs. The checked-in default is 3, so two outer workers cannot
-open six detail browsers at once.
-
-## Setup
-
-Tạo môi trường lần đầu:
-
-```powershell
-cd D:\DE\databrick\playwright
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
-playwright install
-```
-
-Nếu `venv` đã có:
-
-```powershell
-cd D:\DE\PlayWright
-.\venv\Scripts\Activate.ps1
-```
-
-## Common Commands
-
-Smoke test nhanh, 1 city, 1 page, không mở detail:
-
-```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id smoke_20260726_001 `
-  --airflow-try-number 1 --output-dir data/airflow `
-  --destinations "Vung Tau" `
-  --date 2026-06-10 `
-  --max-pages 1 --workers 1 --no-enrich-details
-```
-
-Chạy thủ công bốn city, một ngày, dùng default trong `.env`:
-
-```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id manual_20260726_001 `
-  --airflow-try-number 1 --output-dir data/airflow `
-  --date 2026-06-10
-```
-
-Override city/date khi cần:
-
-```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id override_20260726_001 `
-  --airflow-try-number 1 --output-dir data/airflow `
-  --destinations "Vung Tau,Da Nang,Nha Trang,Ho Chi Minh" `
-  --date 2026-06-16
-```
-
-Mỗi `airflow_run_id` và `airflow_try_number` phải là mới. Attempt đã có output
-không thể dùng lại để tránh trộn dữ liệu.
-
-```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id comparison_20260726_001 `
-  --airflow-try-number 1 --date 2026-06-10 `
-  --output-dir data/airflow
-```
-
-## Runtime Tuning
-
-Các giá trị dưới đây là profile tuning tham khảo. Giá trị runtime thực tế lấy
-từ root `.env`; nếu không có thì dùng fallback trong `agoda_crawler/config.py`.
+Chạy notebook sau một lần:
 
 ```text
-AGODA_WORKERS=2
-AGODA_DETAIL_CONCURRENCY=3
-AGODA_MIN_OPTIONAL_COVERAGE=90
-AGODA_DETAIL_TIMEOUT=30000
-AGODA_FIELD_RETRY_TIMEOUT=1200
-AGODA_FIELD_RETRY_COUNT=2
-
-AGODA_MAX_SCROLL_ROUNDS=80
-AGODA_SCROLL_WAIT_MS=1000
-AGODA_STABLE_ROUNDS=3
-AGODA_LISTING_FULL_SNAPSHOT_INTERVAL=10
-
-AGODA_WAIT_AFTER_SEARCH=1200
-AGODA_WAIT_AFTER_NAV=1500
-AGODA_CARDS_TIMEOUT=45000
-AGODA_CARDS_TIMEOUT_RETRY=20000
-AGODA_URL_FALLBACK_CARDS_TIMEOUT=30000
-AGODA_BLOCK_RESOURCE_TYPES=image,font,media
-AGODA_BLOCK_URL_KEYWORDS=googletagmanager,google-analytics,doubleclick,facebook,hotjar,clarity,taboola
+/Workspace/Users/<your-email>/databricks/notebooks/setup_uc_objects_wrapper
 ```
 
-Nếu máy hoặc network yếu, hạ detail concurrency trước:
+Với parameter:
 
 ```text
-AGODA_DETAIL_CONCURRENCY=2
-AGODA_SCROLL_WAIT_MS=800
-AGODA_STABLE_ROUNDS=3
+project_root=/Workspace/Users/<your-email>/databricks
 ```
 
-Crawler thu listing record ngay trong từng vòng scroll, nên scroll tới đâu thì
-dữ liệu trong page crawl được merge tới đó. JSONL cuối vẫn được ghi sau khi job
-hoàn tất detail enrichment.
-Trong lúc scroll, crawler dùng snapshot nhẹ cho các vòng poll và chỉ chạy
-snapshot đầy đủ định kỳ/cuối page để giảm số lần quét DOM/HTML lớn.
-
-Network route blocking mặc định chặn image/font/media request và một số tracking
-URL để giảm tải cho browser.
-
-## Important Arguments
-
-- `--destinations`: danh sách thành phố, phân tách bằng dấu phẩy.
-- `--date`: ngày check-in duy nhất. Check-out luôn tự động là ngày kế tiếp.
-- `--max-pages`: số result pages tối đa mỗi city/date job; `0` là tất cả.
-- `--workers`: số city/date jobs chạy song song.
-- `--enrich-details` / `--no-enrich-details`: bật/tắt mở trang hotel detail.
-- `--max-detail-pages`: giới hạn detail page; `0` là không giới hạn.
-- `--detail-concurrency`: số detail pages song song trong mỗi job.
-- `--output-dir`: thư mục JSONL output.
-
-## Output And Debug
-
-Output JSONL theo ngày:
+Kết quả mong đợi:
 
 ```text
-data/airflow/dag_id=<dag-id>/batch_id=<batch-id>/attempt=<try>/
+{'status': 'success', 'tables_ready': 7}
+```
+
+### Cấu hình Databricks Job
+
+Tạo ba notebook tasks theo thứ tự:
+
+```text
+ingest_bronze_wrapper -> transform_silver_wrapper -> build_gold_wrapper
+```
+
+Mỗi task dùng Workspace notebook tương ứng trong `databricks/notebooks/`, và
+có base parameters:
+
+```text
+project_root=/Workspace/Users/<your-email>/databricks
+manifest_path={{job.parameters.manifest_path}}
+```
+
+Ở cấp **Job parameters**, tạo:
+
+```text
+manifest_path=__AIRFLOW_SUPPLIES_MANIFEST_PATH__
+```
+
+Airflow sẽ override `manifest_path` cho từng Job run. `agoda_etl/` là Python
+package chứa logic; ba notebook chỉ nhận widgets rồi import và gọi package.
+
+Chi tiết hơn xem [Databricks README](databricks/README.md).
+
+## 4. Khởi động Airflow
+
+Từ root dự án:
+
+```powershell
+docker compose -f airflow/docker-compose.yml build
+docker compose -f airflow/docker-compose.yml up airflow-init
+docker compose -f airflow/docker-compose.yml up -d
+```
+
+`airflow-init` có trạng thái `Exited (0)` là bình thường: đây là container khởi
+tạo chạy một lần. Kiểm tra các service chính:
+
+```powershell
+docker compose -f airflow/docker-compose.yml ps
+```
+
+Mở <http://localhost:8080>, đăng nhập bằng `_AIRFLOW_WWW_USER_USERNAME` và
+`_AIRFLOW_WWW_USER_PASSWORD` trong `.env`.
+
+## 5. Chạy pipeline từ đầu đến cuối
+
+1. Trong Airflow UI, mở DAG `agoda_daily_crawl` và bỏ pause.
+2. Chọn **Trigger DAG** để tạo một DAG run mới.
+3. Theo dõi các task:
+
+   ```text
+   crawl_agoda
+     -> verify_output
+     -> upload_to_uc_volume
+     -> trigger_databricks_job
+     -> cleanup_local_output
+   ```
+
+`trigger_databricks_job` lấy remote manifest path từ `upload_receipt.json` của
+đúng crawler attempt, sau đó gọi Databricks Jobs API với:
+
+```text
+manifest_path=/Volumes/agoda/raw/crawler/.../run_manifest.json
+```
+
+Task chờ Job hoàn tất. Nếu Databricks Bronze, Silver hoặc Gold fail thì task
+Airflow này fail và `cleanup_local_output` không chạy.
+
+Để test với check-in date của Airflow interval hiện tại, nhập khi trigger:
+
+```json
+{"check_in_offset_days": 0}
+```
+
+Luôn tạo **DAG run mới** để chạy lại pipeline end-to-end. Clear/retry task
+`trigger_databricks_job` của một run đã fail sẽ nhận lại Databricks run cũ do
+idempotency token.
+
+## 6. Kiểm tra kết quả
+
+### Local Airflow output
+
+```text
+data/airflow/dag_id=<dag-id>/batch_id=<batch-id>/attempt=<n>/
   agoda_hotels_YYYY-MM-DD.jsonl
   run_manifest.json
+  upload_receipt.json
 ```
 
-Mỗi dòng là một hotel record JSON có thêm provenance Airflow: `batch_id`,
-`airflow_dag_id`, `airflow_run_id`, và `airflow_try_number`.
+JSONL chỉ chứa business fields của khách sạn. `run_manifest.json` là nguồn duy
+nhất của `batch_id`, `airflow_run_id` và các metadata Airflow. `upload_receipt`
+là biên lai local xác nhận các file đã được upload lên Volume.
 
-Debug của một batch nằm trong:
+### Unity Catalog Volume
 
 ```text
-debug/<encoded-batch-id>/<destination>/<check-in>/
-debug/<encoded-batch-id>/summary/<check-in>/
+/Volumes/agoda/raw/crawler/
+  dag_id=<dag-id>/
+    batch_id=<batch-id>/
+      attempt=<n>/
+        agoda_hotels_YYYY-MM-DD.jsonl
+        run_manifest.json
 ```
 
-File thường gặp:
+### Unity Catalog tables
 
-- `summary/<check-in>/missing_price_records.json`: record thiếu `price_value`.
-- `summary/<check-in>/partial_missing_url_records.json`: record thiếu `hotel_url`.
-- `summary/<check-in>/discarded_records.json`: record bị loại vì thiếu `hotel_name`, `hotel_url` hoặc `price_value`.
-- `<destination>/<check-in>/pagination_errors/`: bằng chứng khi pagination duplicate hoặc bất thường.
-- `<destination>/<check-in>/listing_errors/`: snapshot khi listing DOM khó parse.
+Sau Job thành công, kiểm tra:
 
-## Verify Runs
+```text
+agoda.raw.agoda_hotels_bronze
+agoda.raw.agoda_ingestion_ledger
+agoda.silver.agoda_hotels_history
+agoda.gold.agoda_hotel_daily_summary
+agoda.gold.agoda_destination_daily_summary
+agoda.gold.agoda_rating_distribution
+agoda.gold.agoda_price_by_star
+```
 
-Khi crawl xong, kiểm tra log:
+Bronze và Silver idempotent theo `record_id`. Gold rebuild từ toàn bộ Silver
+history để bảng tổng hợp luôn gồm cả dữ liệu cũ và batch mới.
 
-- `Run: destinations=... stays=... jobs=... pages=all`
-- `Concurrency: workers=2 detail=3`
-- `Page N done: records=... new=... total=... time=...`
-- `Detail: enriching ... records with 3 workers`
-- `Timing total: search=... listing=... detail=... total=... bottleneck=...`
-- `Network: blocking types=font,image,media keywords=7`
-- `VERIFY_OPTIONAL_COVERAGE_STATUS=success` hoặc `warning`
-- `VERIFY_DISCARDED_RECORDS=...`
+## 7. Khi thay đổi code hoặc cấu hình
 
-Nếu nhiều page liên tiếp `new=0` hoặc `duplicate`, dữ liệu có thể đã bão hòa hoặc Agoda đang trả page lặp.
-Record thiếu `hotel_name`, `hotel_url` hoặc `price_value` sẽ bị loại khỏi JSONL public và lưu để debug, nhưng không làm process fail. `rating_text`, `review_count_text` và `star_rating_text` vẫn được ghi khi thiếu; mỗi field cảnh báo nếu coverage không vượt `90%`.
+- Thay đổi crawler, Airflow scripts, `requirements.txt` hoặc Dockerfile:
 
-## Tests
+  ```powershell
+  docker compose -f airflow/docker-compose.yml build
+  docker compose -f airflow/docker-compose.yml up -d --force-recreate
+  ```
 
-Chạy toàn bộ test:
+- Thay đổi `.env`: recreate Airflow services để nạp biến mới.
+- Thay đổi `databricks/agoda_etl/` hoặc notebook: upload lại source lên cùng
+  Workspace folder; sau đó chạy Job trực tiếp với một manifest có sẵn hoặc tạo
+  DAG run Airflow mới.
+
+## 8. Chạy crawler thủ công (tùy chọn)
+
+Để debug ngoài Airflow, cần truyền run identity rõ ràng:
 
 ```powershell
-python -m pytest
+python main.py --airflow-dag-id adhoc --airflow-run-id manual_001 `
+  --airflow-try-number 1 --output-dir data/airflow `
+  --destinations "Vung Tau" --date 2026-08-15 --max-pages 1 `
+  --workers 1 --no-enrich-details
 ```
 
-Chạy không tạo pytest cache:
+Lệnh này chỉ crawl local; không tự upload hay trigger Databricks.
 
-```powershell
-python -B -m pytest -p no:cacheprovider
-```
+## Tài liệu chi tiết
 
-## Project Layout
-
-- `main.py`: CLI entrypoint, parse args và gọi orchestration.
-- `agoda_crawler/config.py`: đọc `.env`, biến môi trường, timeout và runtime defaults.
-- `agoda_crawler/orchestration.py`: tạo city/date jobs, chạy workers, ghi output immutable, manifest và summary.
-- `agoda_crawler/jobs.py`: parse destinations/date range và tạo job matrix.
-- `agoda_crawler/crawler.py`: điều phối một crawl job end-to-end.
-- `agoda_crawler/navigation/`: homepage/search URL flow và pagination navigation.
-- `agoda_crawler/listing/`: scroll listing, collect snapshot, dedupe/merge record, pagination state.
-- `agoda_crawler/extraction/`: selector/parser cho listing fields.
-- `agoda_crawler/enrichment/`: mở hotel detail page để bổ sung field thiếu.
-- `agoda_crawler/utils/`: logging, JSONL, debug artifacts, metrics và page helpers.
-- `tests/`: pytest suite cho parser, config, listing collection, crawler helpers và navigation.
-- `data/`: crawl output, transient.
-- `debug/`: diagnostics, transient.
-
-## Operational Notes
-
-- Không commit credentials, cookies, PII hoặc crawl output lớn.
-- `data/` và `debug/` là transient; dùng `--output-dir` riêng cho run cần so sánh.
-- Full detail tốn thời gian vì mỗi hotel có thể cần mở detail page.
-- Với `workers=2` và `detail-concurrency=3`, runtime có thể mở khoảng 6
-  detail pages song song; nên dùng máy RAM 8 GB tối thiểu, 16 GB tốt hơn.
+- [Airflow runbook](airflow/README.md)
+- [Databricks ETL](databricks/README.md)
+- [Manifest và ingestion contract](docs/DATABRICKS_INGESTION.md)

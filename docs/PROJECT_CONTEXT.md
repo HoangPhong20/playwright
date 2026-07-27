@@ -32,7 +32,12 @@ CLI / .env
   -> optional detail enrichment (detail-concurrency trong từng job)
   -> immutable attempt directory -> JSONL + run_manifest.json
   -> completed_attempt.json -> verify -> upload to Unity Catalog Volume
+  -> trigger Databricks Job: Bronze -> Silver -> Gold
 ```
+
+Airflow là orchestrator giữa crawler và Databricks. Databricks Job là
+orchestrator bên trong lớp dữ liệu, nhận một `manifest_path` cụ thể rồi chạy
+các notebook phụ thuộc nhau. Job không quét rộng `*.jsonl` trong Volume.
 
 `--workers` chỉ song song hóa các city/date job. Mỗi cặp destination × check-in
 tạo một job; với bốn thành phố và một ngày, run hiện tại có bốn job nên
