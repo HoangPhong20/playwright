@@ -55,6 +55,27 @@ same batch deterministically.
 - Token Databricks có API scopes `files` và `jobs`; token owner có quyền
   `Can Manage Run` trên Job.
 
+## Windows development setup
+
+Use the Windows Python launcher (`py`) for all local development commands.
+It avoids relying on a `python` command being present on `PATH`; `python` inside
+the Airflow Docker image is intentionally unchanged.
+
+```powershell
+py -m venv venv
+.\venv\Scripts\Activate.ps1
+py -m pip install --upgrade pip
+py -m pip install -r requirements-dev.txt
+py -m playwright install
+py -B -m pytest -p no:cacheprovider
+py -m ruff check .
+py -m mypy agoda_crawler
+```
+
+If `py --list-paths` shows no installed Python, install a supported CPython
+version first, then recreate `venv`. Do not reuse a virtual environment whose
+base interpreter no longer exists.
+
 ## 2. Cấu hình root `.env`
 
 Tạo hoặc cập nhật file `.env` tại root dự án. Không commit file này.

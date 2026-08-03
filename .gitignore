@@ -12,6 +12,7 @@ dist/
 .coverage
 htmlcov/
 data/
+debug/
 .vscode/
 .DS_Store
 Thumbs.db

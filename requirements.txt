@@ -1,2 +1,3 @@
 playwright==1.60.0
 databricks-sdk==0.72.0
+PyYAML==6.0.2

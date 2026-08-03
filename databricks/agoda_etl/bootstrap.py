@@ -20,6 +20,31 @@ def _add_missing_ledger_columns(spark: SparkSession) -> None:
         spark.sql(f"ALTER TABLE {config.LEDGER_TABLE} ADD COLUMNS (target_table STRING)")
 
 
+def _add_approved_bronze_columns(spark: SparkSession) -> None:
+    """Apply nullable contract additions to Bronze without accepting unknown input."""
+    columns = {
+        row["col_name"].lower()
+        for row in spark.sql(f"SHOW COLUMNS IN {config.BRONZE_TABLE}").collect()
+    }
+    for column in config.BUSINESS_OUTPUT_COLUMNS:
+        if column.lower() not in columns:
+            if config.CONTRACT["fields"][column]["required"]:
+                raise ValueError(
+                    f"Adding required contract field {column!r} needs an explicit table migration"
+                )
+            spark.sql(f"ALTER TABLE {config.BRONZE_TABLE} ADD COLUMNS ({column} STRING)")
+
+
+def _rename_legacy_date_column(spark: SparkSession, table: str) -> None:
+    """Migrate the ambiguous legacy business-date column once, if present."""
+    columns = {
+        row["col_name"].lower()
+        for row in spark.sql(f"SHOW COLUMNS IN {table}").collect()
+    }
+    if "date" in columns and "check_in_date" not in columns:
+        spark.sql(f"ALTER TABLE {table} RENAME COLUMN date TO check_in_date")
+
+
 def run_setup(spark: SparkSession) -> dict:
     """Create the schemas and managed Delta tables required by the daily Job."""
     for schema in (config.RAW_SCHEMA, config.SILVER_SCHEMA, config.GOLD_SCHEMA):
@@ -48,6 +73,27 @@ def run_setup(spark: SparkSession) -> dict:
         """,
     )
     _add_missing_ledger_columns(spark)
+    _add_approved_bronze_columns(spark)
+    _create_table(
+        spark,
+        config.QUARANTINE_TABLE,
+        """
+        record_id STRING, batch_id STRING, airflow_dag_id STRING, airflow_run_id STRING,
+        airflow_try_number BIGINT, source_file_path STRING, manifest_path STRING,
+        raw_record_json STRING, failed_rules ARRAY<STRING>, failure_reason STRING,
+        quarantined_at TIMESTAMP
+        """,
+    )
+    _create_table(
+        spark,
+        config.AUDIT_TABLE,
+        """
+        batch_id STRING, airflow_dag_id STRING, airflow_run_id STRING,
+        airflow_try_number BIGINT, layer STRING, contract_version STRING, status STRING,
+        input_records BIGINT, output_records BIGINT, quarantined_records BIGINT,
+        error_message STRING, completed_at TIMESTAMP
+        """,
+    )
     _create_table(
         spark,
         config.SILVER_TABLE,
@@ -55,7 +101,7 @@ def run_setup(spark: SparkSession) -> dict:
         record_id STRING, record_hash STRING, hotel_name STRING, hotel_url STRING,
         price_amount DECIMAL(18,0), rating DECIMAL(3,1), review_count BIGINT,
         star_rating DECIMAL(2,1), crawled_at TIMESTAMP, destination STRING,
-        normalized_destination STRING, date DATE, batch_id STRING,
+        normalized_destination STRING, check_in_date DATE, batch_id STRING,
         airflow_dag_id STRING, airflow_run_id STRING, airflow_try_number BIGINT,
         source_file_path STRING, manifest_path STRING, bronze_ingested_at TIMESTAMP,
         transformed_at TIMESTAMP
@@ -65,7 +111,7 @@ def run_setup(spark: SparkSession) -> dict:
         spark,
         config.HOTEL_DAILY_SUMMARY,
         """
-        date DATE, destination STRING, hotel_url STRING, hotel_name STRING,
+        check_in_date DATE, destination STRING, hotel_url STRING, hotel_name STRING,
         min_price_amount DECIMAL(18,0), avg_price_amount DECIMAL(18,0),
         max_price_amount DECIMAL(18,0), rating DECIMAL(3,1), review_count BIGINT,
         star_rating DECIMAL(2,1), observations BIGINT, last_crawled_at TIMESTAMP
@@ -75,7 +121,7 @@ def run_setup(spark: SparkSession) -> dict:
         spark,
         config.DESTINATION_DAILY_SUMMARY,
         """
-        date DATE, destination STRING, hotel_count BIGINT,
+        check_in_date DATE, destination STRING, hotel_count BIGINT,
         avg_price_amount DECIMAL(18,0), min_price_amount DECIMAL(18,0),
         max_price_amount DECIMAL(18,0), avg_rating DECIMAL(3,1), observations BIGINT
         """,
@@ -84,7 +130,7 @@ def run_setup(spark: SparkSession) -> dict:
         spark,
         config.RATING_DISTRIBUTION,
         """
-        date DATE, destination STRING, rating_bucket STRING, observations BIGINT,
+        check_in_date DATE, destination STRING, rating_bucket STRING, observations BIGINT,
         avg_price_amount DECIMAL(18,0)
         """,
     )
@@ -92,9 +138,18 @@ def run_setup(spark: SparkSession) -> dict:
         spark,
         config.PRICE_BY_STAR,
         """
-        date DATE, destination STRING, star_rating DECIMAL(2,1), observations BIGINT,
+        check_in_date DATE, destination STRING, star_rating DECIMAL(2,1), observations BIGINT,
         avg_price_amount DECIMAL(18,0), median_price_amount DECIMAL(18,0),
         avg_rating DECIMAL(3,1)
         """,
     )
+    for table in (
+        config.SILVER_TABLE,
+        config.HOTEL_DAILY_SUMMARY,
+        config.DESTINATION_DAILY_SUMMARY,
+        config.RATING_DISTRIBUTION,
+        config.PRICE_BY_STAR,
+    ):
+        _rename_legacy_date_column(spark, table)
+
     return {"status": "success", "tables_ready": len(config.DAILY_JOB_TABLES)}

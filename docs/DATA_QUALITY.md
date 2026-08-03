@@ -63,6 +63,26 @@ VERIFY_OPTIONAL_COVERAGE_STATUS=
 VERIFY_DISCARDED_RECORDS=
 ```
 
+## Databricks Bronze quality gate
+
+The versioned source contract is `databricks/contracts/agoda_hotel.yaml`.
+Bronze rejects a JSONL schema with missing, unknown, or non-string fields.
+Updating the contract with an approved nullable field allows setup to add that
+field to Bronze; renames, type changes, and new required fields need an
+explicit migration.
+
+Bronze quarantines records that violate required-field, URL, positive-price,
+timestamp, check-in/check-out, rating, review-count, star-rating, or duplicate
+record-ID rules. The valid portion proceeds to Bronze. The batch fails only
+after quarantine when invalid records exceed 10% of input or 200 records.
+
+Use these Unity Catalog tables to investigate a run:
+
+```text
+agoda.raw.agoda_hotel_quarantine
+agoda.raw.agoda_pipeline_audit
+```
+
 ## Dedupe
 
 Thứ tự identity ưu tiên là `canonical_url`, URL chuẩn hóa, `listing_property_id`, rồi fallback `hotel_name`. Merge chỉ bổ sung field đang thiếu; không ghi đè dữ liệu đã có. Vì vậy tổng `page_records` có thể cao hơn tổng record cuối khi Agoda lặp listing giữa các page.

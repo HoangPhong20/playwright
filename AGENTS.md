@@ -30,12 +30,14 @@ utilities.
 
 Use PowerShell from the repository root.
 
-- `python -m venv venv`: create local virtual environment.
+- `py -m venv venv`: create local virtual environment on Windows.
 - `.\venv\Scripts\Activate.ps1`: activate environment.
-- `python -m pip install -r requirements-dev.txt`: install development dependencies.
-- `playwright install`: install browser binaries.
-- `python -m pytest`: run tests.
-- `python -B -m pytest -p no:cacheprovider`: run tests without pytest cache.
+- `py -m pip install -r requirements-dev.txt`: install development dependencies.
+- `py -m playwright install`: install browser binaries.
+- `py -m pytest`: run tests.
+- `py -B -m pytest -p no:cacheprovider`: run tests without pytest cache.
+- `py -m ruff check .`: run lint checks.
+- `py -m mypy agoda_crawler`: run the initial type-checking boundary.
 
 Manual runtime examples must provide an Airflow-compatible identity:
 

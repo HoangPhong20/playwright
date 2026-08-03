@@ -44,6 +44,23 @@ manifest_path=/Volumes/agoda/raw/crawler/dag_id=<id>/batch_id=<id>/attempt=<n>/r
 `manifest_path` phải là manifest `complete` do Airflow upload cuối cùng. Pipeline
 chỉ đọc JSONL được liệt kê trong manifest, không quét Volume bằng wildcard.
 
+## Data contract and quality controls
+
+`contracts/agoda_hotel.yaml` is the versioned input contract for crawler JSONL.
+Bronze rejects missing, unknown, or non-string source columns. An approved
+nullable field is added by updating this contract and running setup; a rename or
+type change requires an explicit migration.
+
+Bronze validates required fields, URL, positive price, dates, timestamps,
+rating, review count, star rating, and duplicate ingestion IDs. Invalid records
+are written to `agoda.raw.agoda_hotel_quarantine`; valid records continue. The
+batch fails after quarantine when invalid records exceed 10% of input or 200
+records. `agoda.raw.agoda_pipeline_audit` records Bronze, Silver, and Gold
+counts and terminal status for every batch.
+
+Install `PyYAML==6.0.2` on the Databricks cluster or attach it as a job library
+before running the updated notebooks.
+
 JSONL chỉ chứa dữ liệu crawl nghiệp vụ. `batch_id` và các metadata Airflow chỉ
 có trong manifest; Bronze thêm chúng đúng một lần khi ghi vào Delta.
 
@@ -53,9 +70,15 @@ có trong manifest; Bronze thêm chúng đúng một lần khi ghi vào Delta.
   `record_id`.
 - `agoda.raw.agoda_ingestion_ledger`: trạng thái từng JSONL; file đã `loaded`
   sẽ không được Bronze nạp lại.
-- `agoda.silver.agoda_hotels_history`: history chuẩn hoá; `date` lấy từ
+- `agoda.silver.agoda_hotels_history`: history chuẩn hoá; `check_in_date` lấy từ
   `check_in`.
-- `agoda.gold.*`: bốn bảng tổng hợp theo `date` và `destination`.
+- `agoda.gold.*`: bốn bảng tổng hợp theo `check_in_date` và `destination`.
+
+### Migration: `date` to `check_in_date`
+
+After uploading this version, run `notebooks/setup_uc_objects_wrapper` once.
+It renames the existing Silver and Gold `date` columns to `check_in_date` when
+needed. The next Gold task rebuilds each summary table with the new schema.
 
 Bronze và Silver idempotent theo `record_id`. Gold đọc toàn bộ Silver history
 và ghi lại bốn bảng tổng hợp, nên các ngày cũ và dữ liệu batch mới luôn nhất

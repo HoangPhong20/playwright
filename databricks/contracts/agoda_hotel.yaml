@@ -1,0 +1,16 @@
+version: "1.0.0"
+name: agoda_hotel
+fields:
+  hotel_name: {type: string, required: true}
+  hotel_url: {type: string, required: true, format: uri}
+  price_value: {type: string, required: true, format: positive_price}
+  rating_text: {type: string, required: false, format: rating_0_10}
+  review_count_text: {type: string, required: false, format: non_negative_integer}
+  star_rating_text: {type: string, required: false, format: star_rating_0_5}
+  crawled_at: {type: string, required: true, format: timestamp}
+  destination: {type: string, required: true}
+  normalized_destination: {type: string, required: true}
+  check_in: {type: string, required: true, format: date}
+  check_out: {type: string, required: true, format: date}
+cross_field_rules:
+  - check_out_after_check_in

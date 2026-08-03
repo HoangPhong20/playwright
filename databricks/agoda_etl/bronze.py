@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from . import config, runtime, schemas
+from . import audit, config, data_quality, runtime, schemas
 
 
 logger = logging.getLogger(__name__)
@@ -99,45 +99,111 @@ def _stage_jsonl(
     )
 
 
+def _upsert_quarantine(spark: SparkSession, quarantined: DataFrame) -> None:
+    view_name = f"agoda_quarantine_stage_{uuid.uuid4().hex}"
+    quarantined.createOrReplaceTempView(view_name)
+    spark.sql(
+        f"""
+        MERGE INTO {config.QUARANTINE_TABLE} AS target
+        USING {view_name} AS source
+        ON target.record_id = source.record_id
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
+        """
+    )
+
+
 def run_bronze_ingestion(spark: SparkSession, manifest_path: str) -> dict:
     """Load each manifest JSONL file exactly once into the Bronze Delta table."""
     manifest, location, source_files = runtime.read_completed_manifest(spark, manifest_path)
-    runtime.require_tables(spark, config.BRONZE_TABLE, config.LEDGER_TABLE)
+    runtime.require_tables(
+        spark, config.BRONZE_TABLE, config.LEDGER_TABLE,
+        config.QUARANTINE_TABLE, config.AUDIT_TABLE,
+    )
     loaded_files = 0
     skipped_files = 0
-
-    for source_file in source_files:
-        if _is_loaded(spark, manifest["batch_id"], source_file):
-            skipped_files += 1
-            continue
-        try:
-            _upsert_ledger(spark, manifest, location, source_file, "loading")
-            staged = _stage_jsonl(spark, source_file, manifest, location)
-            row_count = staged.count()
-            if row_count < 1:
-                raise ValueError(f"JSONL file is empty: {source_file}")
-            stage_view_name = f"agoda_bronze_stage_{uuid.uuid4().hex}"
-            staged.createOrReplaceTempView(stage_view_name)
-            spark.sql(
-                f"""
-                MERGE INTO {config.BRONZE_TABLE} AS target
-                USING {stage_view_name} AS source
-                ON target.record_id = source.record_id
-                WHEN NOT MATCHED THEN INSERT *
-                """
+    input_records = 0
+    quarantined_records = 0
+    staged_files: list[tuple[str, DataFrame, int, int]] = []
+    try:
+        for source_file in source_files:
+            if _is_loaded(spark, manifest["batch_id"], source_file):
+                skipped_files += 1
+                continue
+            valid, quarantined, file_input, file_invalid = data_quality.read_and_validate(
+                spark, source_file, manifest, location
             )
-            _upsert_ledger(spark, manifest, location, source_file, "loaded", row_count=row_count)
-            loaded_files += 1
-        except Exception as error:
-            _upsert_ledger(spark, manifest, location, source_file, "failed", error_message=str(error)[:4000])
-            raise
+            _upsert_quarantine(spark, quarantined)
+            staged_files.append((source_file, valid, file_input, file_invalid))
+            input_records += file_input
+            quarantined_records += file_invalid
 
-    result = {
-        "status": "success", "batch_id": manifest["batch_id"],
-        "airflow_dag_id": manifest["airflow_dag_id"],
-        "airflow_run_id": manifest["airflow_run_id"],
-        "airflow_try_number": manifest["airflow_try_number"],
-        "files_loaded": loaded_files, "files_skipped": skipped_files,
-    }
-    logger.info("Bronze ingestion complete: %s", result)
-    return result
+        if input_records < 1:
+            if skipped_files == len(source_files):
+                result = {
+                    "status": "success", "batch_id": manifest["batch_id"],
+                    "airflow_dag_id": manifest["airflow_dag_id"],
+                    "airflow_run_id": manifest["airflow_run_id"],
+                    "airflow_try_number": manifest["airflow_try_number"],
+                    "files_loaded": 0, "files_skipped": skipped_files,
+                    "input_records": 0, "output_records": 0,
+                    "quarantined_records": 0,
+                }
+                logger.info("Bronze ingestion already complete: %s", result)
+                return result
+            raise ValueError("No source records available for Bronze ingestion")
+        if (
+            quarantined_records > config.MAX_INVALID_RECORDS
+            or quarantined_records / input_records > config.MAX_INVALID_RATIO
+        ):
+            raise ValueError(
+                f"Data quality threshold exceeded: quarantined={quarantined_records}, "
+                f"input={input_records}, max_ratio={config.MAX_INVALID_RATIO}, "
+                f"max_records={config.MAX_INVALID_RECORDS}"
+            )
+
+        loaded_records = 0
+        for source_file, staged, file_input, file_invalid in staged_files:
+            row_count = file_input - file_invalid
+            if row_count < 1:
+                continue
+            try:
+                _upsert_ledger(spark, manifest, location, source_file, "loading")
+                stage_view_name = f"agoda_bronze_stage_{uuid.uuid4().hex}"
+                staged.createOrReplaceTempView(stage_view_name)
+                spark.sql(
+                    f"""
+                    MERGE INTO {config.BRONZE_TABLE} AS target
+                    USING {stage_view_name} AS source
+                    ON target.record_id = source.record_id
+                    WHEN NOT MATCHED THEN INSERT *
+                    """
+                )
+                _upsert_ledger(spark, manifest, location, source_file, "loaded", row_count=row_count)
+                loaded_files += 1
+                loaded_records += row_count
+            except Exception as error:
+                _upsert_ledger(spark, manifest, location, source_file, "failed", error_message=str(error)[:4000])
+                raise
+        if loaded_records < 1 and skipped_files == 0:
+            raise ValueError("No valid records remain after data quality validation")
+        result = {
+            "status": "success", "batch_id": manifest["batch_id"],
+            "airflow_dag_id": manifest["airflow_dag_id"],
+            "airflow_run_id": manifest["airflow_run_id"],
+            "airflow_try_number": manifest["airflow_try_number"],
+            "files_loaded": loaded_files, "files_skipped": skipped_files,
+            "input_records": input_records, "output_records": loaded_records,
+            "quarantined_records": quarantined_records,
+        }
+        audit.write_audit(
+            spark, manifest, "bronze", "success", input_records, loaded_records, quarantined_records
+        )
+        logger.info("Bronze ingestion complete: %s", result)
+        return result
+    except Exception as error:
+        audit.write_audit(
+            spark, manifest, "bronze", "failed", input_records, 0, quarantined_records,
+            str(error)[:4000],
+        )
+        raise

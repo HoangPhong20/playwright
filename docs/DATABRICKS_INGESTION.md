@@ -65,8 +65,9 @@ file, the Databricks job checks the ledger. If that identity is already
 `airflow_run_id` is audit metadata, not a business de-duplication key. A new
 Airflow run can legitimately crawl the same hotel and date again. The current
 Silver table is history, so it retains every successful observation and exposes
-`date` derived from the crawler's `check_in`. A future latest-state table can
-deduplicate by `hotel_url` and `date`, ordered by `crawled_at`.
+`check_in_date` derived from the crawler's `check_in`. A future latest-state
+table can deduplicate by `hotel_url` and `check_in_date`, ordered by
+`crawled_at`.
 
 ## Loader sequence
 
