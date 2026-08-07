@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from . import audit, config, data_quality, runtime, schemas
+from . import audit, config, data_quality, runtime, utils
 
 
 logger = logging.getLogger(__name__)
@@ -60,59 +60,6 @@ def _upsert_ledger(
     )
 
 
-def _stage_jsonl(
-    spark: SparkSession,
-    file_path: str,
-    manifest: dict,
-    manifest_path: PurePosixPath,
-) -> DataFrame:
-    # A fixed business-only schema ignores Airflow metadata present in legacy JSONL.
-    source = spark.read.schema(schemas.CRAWLER_OUTPUT_SCHEMA).json(file_path)
-    payload = [
-        F.coalesce(F.col(column).cast("string"), F.lit(""))
-        for column in config.BUSINESS_OUTPUT_COLUMNS
-    ]
-    return (
-        source.select(
-            *[F.col(column) for column in config.BUSINESS_OUTPUT_COLUMNS],
-            F.lit(manifest["batch_id"]).alias("batch_id"),
-            F.lit(manifest["airflow_dag_id"]).alias("airflow_dag_id"),
-            F.lit(manifest["airflow_run_id"]).alias("airflow_run_id"),
-            F.lit(manifest["airflow_try_number"]).cast("long").alias("airflow_try_number"),
-            F.lit(file_path).alias("source_file_path"),
-            F.lit(str(manifest_path)).alias("manifest_path"),
-            F.sha2(F.concat_ws("\u001f", *payload), 256).alias("record_hash"),
-            F.current_timestamp().alias("ingested_at"),
-        )
-        .select(
-            F.sha2(
-                F.concat_ws("\u001f", F.col("batch_id"), F.col("source_file_path"), F.col("record_hash")),
-                256,
-            ).alias("record_id"),
-            "record_hash",
-            *config.OUTPUT_COLUMNS,
-            "source_file_path",
-            "manifest_path",
-            "ingested_at"
-        )
-        .dropDuplicates(["record_id"])
-    )
-
-
-def _upsert_quarantine(spark: SparkSession, quarantined: DataFrame) -> None:
-    view_name = f"agoda_quarantine_stage_{uuid.uuid4().hex}"
-    quarantined.createOrReplaceTempView(view_name)
-    spark.sql(
-        f"""
-        MERGE INTO {config.QUARANTINE_TABLE} AS target
-        USING {view_name} AS source
-        ON target.record_id = source.record_id
-        WHEN MATCHED THEN UPDATE SET *
-        WHEN NOT MATCHED THEN INSERT *
-        """
-    )
-
-
 def run_bronze_ingestion(spark: SparkSession, manifest_path: str) -> dict:
     """Load each manifest JSONL file exactly once into the Bronze Delta table."""
     manifest, location, source_files = runtime.read_completed_manifest(spark, manifest_path)
@@ -124,17 +71,23 @@ def run_bronze_ingestion(spark: SparkSession, manifest_path: str) -> dict:
     skipped_files = 0
     input_records = 0
     quarantined_records = 0
-    staged_files: list[tuple[str, DataFrame, int, int]] = []
+    staged_files: list[tuple[str, DataFrame, int, int, int]] = []
     try:
+        expected_counts = utils.manifest_output_record_counts(manifest, location)
         for source_file in source_files:
             if _is_loaded(spark, manifest["batch_id"], source_file):
                 skipped_files += 1
                 continue
-            valid, quarantined, file_input, file_invalid = data_quality.read_and_validate(
+            valid, quarantined, file_input, file_invalid = data_quality.read_raw_records(
                 spark, source_file, manifest, location
             )
-            _upsert_quarantine(spark, quarantined)
-            staged_files.append((source_file, valid, file_input, file_invalid))
+            if file_input != expected_counts[source_file]:
+                raise ValueError(
+                    f"Manifest record count mismatch for {source_file}: "
+                    f"expected={expected_counts[source_file]}, actual={file_input}"
+                )
+            data_quality.upsert_quarantine(spark, quarantined)
+            staged_files.append((source_file, valid, file_input, file_invalid, valid.count()))
             input_records += file_input
             quarantined_records += file_invalid
 
@@ -152,10 +105,7 @@ def run_bronze_ingestion(spark: SparkSession, manifest_path: str) -> dict:
                 logger.info("Bronze ingestion already complete: %s", result)
                 return result
             raise ValueError("No source records available for Bronze ingestion")
-        if (
-            quarantined_records > config.MAX_INVALID_RECORDS
-            or quarantined_records / input_records > config.MAX_INVALID_RATIO
-        ):
+        if data_quality.exceeds_invalid_threshold(input_records, quarantined_records):
             raise ValueError(
                 f"Data quality threshold exceeded: quarantined={quarantined_records}, "
                 f"input={input_records}, max_ratio={config.MAX_INVALID_RATIO}, "
@@ -163,8 +113,7 @@ def run_bronze_ingestion(spark: SparkSession, manifest_path: str) -> dict:
             )
 
         loaded_records = 0
-        for source_file, staged, file_input, file_invalid in staged_files:
-            row_count = file_input - file_invalid
+        for source_file, staged, file_input, file_invalid, row_count in staged_files:
             if row_count < 1:
                 continue
             try:

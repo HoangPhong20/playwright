@@ -6,7 +6,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType
 
-from . import audit, config, runtime
+from . import audit, config, data_quality, runtime
 
 
 def transform_bronze_to_silver(bronze_df: DataFrame) -> DataFrame:
@@ -32,7 +32,7 @@ def transform_bronze_to_silver(bronze_df: DataFrame) -> DataFrame:
         .withColumn("bronze_ingested_at", F.col("ingested_at"))
         .withColumn("transformed_at", F.current_timestamp())
         .select(
-            "record_id", "record_hash", "hotel_name", "hotel_url", "price_amount", "rating",
+            "record_id", "hotel_name", "hotel_url", "price_amount", "rating",
             "review_count", "star_rating", "crawled_at", "destination", "normalized_destination",
             "check_in_date", "batch_id", "airflow_dag_id", "airflow_run_id", "airflow_try_number",
             "source_file_path", "manifest_path", "bronze_ingested_at", "transformed_at",
@@ -43,8 +43,12 @@ def transform_bronze_to_silver(bronze_df: DataFrame) -> DataFrame:
 def run_silver_transformation(spark: SparkSession, manifest_path: str) -> dict:
     """Transform exactly one manifest batch without overwriting Silver history."""
     manifest, _, source_files = runtime.read_completed_manifest(spark, manifest_path)
-    runtime.require_tables(spark, config.BRONZE_TABLE, config.SILVER_TABLE, config.AUDIT_TABLE)
+    runtime.require_tables(
+        spark, config.BRONZE_TABLE, config.SILVER_TABLE,
+        config.QUARANTINE_TABLE, config.AUDIT_TABLE,
+    )
     input_records = 0
+    quarantined_records = 0
     try:
         bronze_batch = (
             spark.table(config.BRONZE_TABLE)
@@ -55,8 +59,19 @@ def run_silver_transformation(spark: SparkSession, manifest_path: str) -> dict:
         if input_records == 0:
             raise ValueError("No Bronze records found for this manifest; run Bronze ingestion first")
 
-        stage = transform_bronze_to_silver(bronze_batch)
+        valid_bronze, quarantined = data_quality.validate_silver_records(bronze_batch)
+        quarantined_records = quarantined.count()
+        data_quality.upsert_quarantine(spark, quarantined)
+        if data_quality.exceeds_invalid_threshold(input_records, quarantined_records):
+            raise ValueError(
+                f"Silver data quality threshold exceeded: quarantined={quarantined_records}, "
+                f"input={input_records}, max_ratio={config.MAX_INVALID_RATIO}, "
+                f"max_records={config.MAX_INVALID_RECORDS}"
+            )
+        stage = transform_bronze_to_silver(valid_bronze)
         record_count = stage.count()
+        if record_count < 1:
+            raise ValueError("No valid Bronze records remain after Silver validation")
         stage.createOrReplaceTempView("agoda_silver_stage")
         spark.sql(
             f"""
@@ -66,11 +81,15 @@ def run_silver_transformation(spark: SparkSession, manifest_path: str) -> dict:
             WHEN NOT MATCHED THEN INSERT *
             """
         )
-        audit.write_audit(spark, manifest, "silver", "success", input_records, record_count)
+        audit.write_audit(spark, manifest, "silver", "success", input_records, record_count, quarantined_records)
         return {
             "status": "success", "batch_id": manifest["batch_id"],
-            "records_transformed": record_count, "files_processed": len(source_files),
+            "records_transformed": record_count, "quarantined_records": quarantined_records,
+            "files_processed": len(source_files),
         }
     except Exception as error:
-        audit.write_audit(spark, manifest, "silver", "failed", input_records, error_message=str(error)[:4000])
+        audit.write_audit(
+            spark, manifest, "silver", "failed", input_records,
+            quarantined_records=quarantined_records, error_message=str(error)[:4000],
+        )
         raise

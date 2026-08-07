@@ -12,10 +12,14 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    # LocalExecutor tasks run in the scheduler container.  Its Docker hostname
+    # is not resolvable from the API server, so publish the container IP for
+    # task-log serving instead.
+    AIRFLOW__CORE__HOSTNAME_CALLABLE: airflow.utils.net.get_host_ip_address
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
   volumes:
     - ./dags:/opt/airflow/dags
-    - ./logs:/opt/airflow/logs
+    - airflow-logs-volume:/opt/airflow/logs
     - ../data:/opt/airflow/app/data
     - ../debug:/opt/airflow/app/debug
   user: "${AIRFLOW_UID:-50000}:0"
@@ -44,7 +48,13 @@ services:
     build:
       context: ..
       dockerfile: airflow/Dockerfile
-    command: version
+    command:
+      - bash
+      - -c
+      - >-
+        mkdir -p /opt/airflow/logs /opt/airflow/app/data /opt/airflow/app/debug &&
+        chown -R 50000:0 /opt/airflow/logs /opt/airflow/app/data /opt/airflow/app/debug &&
+        exec airflow version
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: "true"
@@ -94,3 +104,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  airflow-logs-volume:

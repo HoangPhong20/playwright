@@ -64,6 +64,7 @@ def test_silver_and_gold_use_an_explicit_check_in_date() -> None:
 
     assert 'withColumn("check_in_date", F.to_date("check_in"))' in silver_source
     assert 'groupBy("check_in_date", "destination")' in gold_source
+    assert "delta.columnMapping.mode' = 'name" in bootstrap_source
     assert "RENAME COLUMN date TO check_in_date" in bootstrap_source
 
 
@@ -75,10 +76,39 @@ def test_data_quality_contract_and_operational_tables_are_declared() -> None:
 
     assert contract_path.is_file()
     assert "version:" in contract_path.read_text(encoding="utf-8")
-    assert "validate_source_schema" in quality_source
-    assert "check_out_not_after_check_in" in quality_source
+    assert "read_raw_records" in quality_source
+    assert "validate_silver_records" in quality_source
+    assert "raw_record_json" in quality_source
+    assert "check_out_after_check_in" in quality_source
     assert "QUARANTINE_TABLE" in bootstrap_source
     assert "AUDIT_TABLE" in bootstrap_source
+
+
+def test_bronze_is_permissive_and_silver_owns_business_validation() -> None:
+    project_root = Path(__file__).parents[1]
+    bronze_source = (project_root / "databricks" / "agoda_etl" / "bronze.py").read_text(encoding="utf-8")
+    silver_source = (project_root / "databricks" / "agoda_etl" / "silver.py").read_text(encoding="utf-8")
+
+    assert "read_raw_records" in bronze_source
+    assert "validate_source_schema" not in bronze_source
+    assert "validate_silver_records" in silver_source
+    assert "raw_record_json" in (project_root / "databricks" / "agoda_etl" / "bootstrap.py").read_text(encoding="utf-8")
+
+
+def test_invalid_optional_metrics_are_defaulted_before_silver_validation() -> None:
+    source = (PROJECT_ROOT / "databricks" / "agoda_etl" / "data_quality.py").read_text(encoding="utf-8")
+
+    assert "def _default_invalid_optional_metrics" in source
+    assert 'F.lit("0")' in source
+    assert 'F.lit("0 stars")' in source
+    assert "_with_failure_rules(_default_invalid_optional_metrics(bronze))" in source
+
+
+def test_manifest_exposes_expected_record_count_per_output_file() -> None:
+    manifest_path = "/Volumes/agoda/raw/crawler/dag_id=agoda_daily_crawl/batch_id=manual/attempt=1/run_manifest.json"
+    assert utils.manifest_output_record_counts(complete_manifest(), manifest_path) == {
+        "/Volumes/agoda/raw/crawler/dag_id=agoda_daily_crawl/batch_id=manual/attempt=1/agoda_hotels_2026-08-16.jsonl": 3
+    }
 
 
 def test_bronze_retry_skips_a_fully_loaded_batch() -> None:

@@ -47,16 +47,27 @@ chỉ đọc JSONL được liệt kê trong manifest, không quét Volume bằn
 ## Data contract and quality controls
 
 `contracts/agoda_hotel.yaml` is the versioned input contract for crawler JSONL.
-Bronze rejects missing, unknown, or non-string source columns. An approved
-nullable field is added by updating this contract and running setup; a rename or
-type change requires an explicit migration.
+Its current version is `1.1.0` and declares `validation_layer: silver`.
 
-Bronze validates required fields, URL, positive price, dates, timestamps,
-rating, review count, star rating, and duplicate ingestion IDs. Invalid records
-are written to `agoda.raw.agoda_hotel_quarantine`; valid records continue. The
-batch fails after quarantine when invalid records exceed 10% of input or 200
-records. `agoda.raw.agoda_pipeline_audit` records Bronze, Silver, and Gold
-counts and terminal status for every batch.
+Bronze reads JSONL permissively. It accepts unknown fields, missing fields, and
+source scalar-type changes, preserving every valid JSON object verbatim in
+`raw_record_json`. Only malformed JSON lines are written to
+`agoda.raw.agoda_hotel_quarantine` at this boundary, with
+`quarantine_layer = bronze`. Before ingesting each JSONL file, Bronze verifies
+that its physical line count exactly matches the file's `publishable_records`
+value in the manifest.
+
+Silver enforces the YAML contract: required fields, URL, positive price,
+timestamps, check-in/check-out dates, rating, review count, star rating, and
+the cross-field check-out-after-check-in rule. Invalid rows remain in Bronze and
+are written to quarantine with `quarantine_layer = silver`; valid rows continue
+to Silver. Silver fails after quarantine only when invalid records exceed 10% of
+input or 200 records. `agoda.raw.agoda_pipeline_audit` records Bronze, Silver,
+and Gold counts and terminal status for every batch.
+
+Malformed non-blank values for the optional `rating_text`, `review_count_text`,
+and `star_rating_text` fields are normalized to zero before Silver validation;
+missing optional values remain null.
 
 Install `PyYAML==6.0.2` on the Databricks cluster or attach it as a job library
 before running the updated notebooks.
@@ -74,11 +85,14 @@ có trong manifest; Bronze thêm chúng đúng một lần khi ghi vào Delta.
   `check_in`.
 - `agoda.gold.*`: bốn bảng tổng hợp theo `check_in_date` và `destination`.
 
-### Migration: `date` to `check_in_date`
+### Migration for existing tables
 
 After uploading this version, run `notebooks/setup_uc_objects_wrapper` once.
 It renames the existing Silver and Gold `date` columns to `check_in_date` when
-needed. The next Gold task rebuilds each summary table with the new schema.
+needed, adds `raw_record_json` to the Bronze table, and adds
+`quarantine_layer` to the quarantine table. The next Gold task rebuilds each
+summary table with the new schema. For legacy Delta tables, setup automatically
+enables name-based column mapping before the rename.
 
 Bronze và Silver idempotent theo `record_id`. Gold đọc toàn bộ Silver history
 và ghi lại bốn bảng tổng hợp, nên các ngày cũ và dữ liệu batch mới luôn nhất

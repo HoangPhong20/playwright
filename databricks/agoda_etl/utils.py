@@ -29,10 +29,10 @@ def parse_manifest_text(text: str) -> dict[str, Any]:
     return manifest
 
 
-def manifest_output_files(
+def manifest_output_record_counts(
     manifest: dict[str, Any], manifest_path: str | PurePosixPath
-) -> list[str]:
-    """Return only JSONL files declared by a complete crawler manifest."""
+) -> dict[str, int]:
+    """Return each declared JSONL file and its manifest record count."""
     if manifest.get("status") != "complete":
         raise ValueError("manifest status must be 'complete'")
     for field in ("batch_id", "airflow_dag_id", "airflow_run_id"):
@@ -46,7 +46,7 @@ def manifest_output_files(
     if not isinstance(stays, list) or not stays:
         raise ValueError("manifest has no completed stays")
 
-    files: list[str] = []
+    files: dict[str, int] = {}
     for stay in stays:
         if not isinstance(stay, dict):
             raise ValueError("manifest has an invalid stay entry")
@@ -59,6 +59,14 @@ def manifest_output_files(
         if not isinstance(publishable_records, int) or publishable_records < 1:
             raise ValueError("manifest stay has no publishable records")
         file_path = str(parent / filename)
-        if file_path not in files:
-            files.append(file_path)
+        if file_path in files:
+            raise ValueError("manifest declares the same output_file more than once")
+        files[file_path] = publishable_records
     return files
+
+
+def manifest_output_files(
+    manifest: dict[str, Any], manifest_path: str | PurePosixPath
+) -> list[str]:
+    """Return only JSONL files declared by a complete crawler manifest."""
+    return list(manifest_output_record_counts(manifest, manifest_path))

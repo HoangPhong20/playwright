@@ -75,8 +75,9 @@ table can deduplicate by `hotel_url` and `check_in_date`, ordered by
 2. Read `run_manifest.json`; stop unless its status is `complete`.
 3. Read only the manifest's declared output paths.
 4. Add Airflow provenance columns from the validated manifest.
-5. Read JSONL with the fixed crawler schema, remove duplicate `record_id`
-   values within the file, then write to Bronze.
+5. Read JSONL lines permissively, preserve each original line in
+   `raw_record_json`, remove duplicate exact-record IDs within the file, then
+   write to Bronze. Business-format validation is performed in Silver.
 6. Mark the ledger row as `loaded` only after the Bronze write succeeds.
 
 ## Airflow upload to a Unity Catalog Volume

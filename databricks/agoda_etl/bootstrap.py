@@ -35,6 +35,13 @@ def _add_approved_bronze_columns(spark: SparkSession) -> None:
             spark.sql(f"ALTER TABLE {config.BRONZE_TABLE} ADD COLUMNS ({column} STRING)")
 
 
+def _add_missing_columns(spark: SparkSession, table: str, definitions: dict[str, str]) -> None:
+    columns = {row["col_name"].lower() for row in spark.sql(f"SHOW COLUMNS IN {table}").collect()}
+    for name, data_type in definitions.items():
+        if name.lower() not in columns:
+            spark.sql(f"ALTER TABLE {table} ADD COLUMNS ({name} {data_type})")
+
+
 def _rename_legacy_date_column(spark: SparkSession, table: str) -> None:
     """Migrate the ambiguous legacy business-date column once, if present."""
     columns = {
@@ -42,6 +49,13 @@ def _rename_legacy_date_column(spark: SparkSession, table: str) -> None:
         for row in spark.sql(f"SHOW COLUMNS IN {table}").collect()
     }
     if "date" in columns and "check_in_date" not in columns:
+        # Delta requires name-based column mapping before a physical column
+        # rename.  Apply it only to legacy tables that actually need this
+        # migration, so newly created tables keep their default protocol.
+        spark.sql(
+            f"ALTER TABLE {table} SET TBLPROPERTIES "
+            "('delta.columnMapping.mode' = 'name')"
+        )
         spark.sql(f"ALTER TABLE {table} RENAME COLUMN date TO check_in_date")
 
 
@@ -54,7 +68,7 @@ def run_setup(spark: SparkSession) -> dict:
         spark,
         config.BRONZE_TABLE,
         """
-        record_id STRING, record_hash STRING,
+        record_id STRING,
         hotel_name STRING, hotel_url STRING, price_value STRING,
         rating_text STRING, review_count_text STRING, star_rating_text STRING,
         crawled_at STRING, destination STRING, normalized_destination STRING,
@@ -74,6 +88,7 @@ def run_setup(spark: SparkSession) -> dict:
     )
     _add_missing_ledger_columns(spark)
     _add_approved_bronze_columns(spark)
+    _add_missing_columns(spark, config.BRONZE_TABLE, {"raw_record_json": "STRING"})
     _create_table(
         spark,
         config.QUARANTINE_TABLE,
@@ -81,9 +96,11 @@ def run_setup(spark: SparkSession) -> dict:
         record_id STRING, batch_id STRING, airflow_dag_id STRING, airflow_run_id STRING,
         airflow_try_number BIGINT, source_file_path STRING, manifest_path STRING,
         raw_record_json STRING, failed_rules ARRAY<STRING>, failure_reason STRING,
+        quarantine_layer STRING,
         quarantined_at TIMESTAMP
         """,
     )
+    _add_missing_columns(spark, config.QUARANTINE_TABLE, {"quarantine_layer": "STRING"})
     _create_table(
         spark,
         config.AUDIT_TABLE,
@@ -98,7 +115,7 @@ def run_setup(spark: SparkSession) -> dict:
         spark,
         config.SILVER_TABLE,
         """
-        record_id STRING, record_hash STRING, hotel_name STRING, hotel_url STRING,
+        record_id STRING, hotel_name STRING, hotel_url STRING,
         price_amount DECIMAL(18,0), rating DECIMAL(3,1), review_count BIGINT,
         star_rating DECIMAL(2,1), crawled_at TIMESTAMP, destination STRING,
         normalized_destination STRING, check_in_date DATE, batch_id STRING,

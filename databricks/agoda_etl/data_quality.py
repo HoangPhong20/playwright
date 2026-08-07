@@ -1,104 +1,213 @@
-"""Schema and record-quality validation at the Bronze ingress boundary."""
+"""Raw Bronze parsing and contract-driven Silver quality validation."""
 
 from __future__ import annotations
 
+import uuid
 from pathlib import PurePosixPath
 
-from pyspark.sql import DataFrame, SparkSession, Window
+from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from . import config, schemas
 
 
-class SchemaContractError(ValueError):
-    """Raised when a source JSONL schema differs from the approved contract."""
+def _non_blank(name: str) -> Column:
+    return F.col(name).isNotNull() & (F.length(F.trim(F.col(name))) > 0)
 
 
-def validate_source_schema(spark: SparkSession, file_path: str) -> None:
-    """Reject missing, unknown, or non-string source fields before ingestion."""
-    actual = {field.name: field.dataType.simpleString() for field in spark.read.json(file_path).schema.fields}
-    expected = set(config.BUSINESS_OUTPUT_COLUMNS)
-    missing = sorted(expected - set(actual))
-    unknown = sorted(set(actual) - expected)
-    incompatible = sorted(
-        name for name, data_type in actual.items()
-        if name in expected and data_type not in {"string", "void"}
+def _format_failure(name: str, format_name: str) -> Column:
+    """Return a null-or-reason expression for one YAML-declared format."""
+    digits = F.regexp_replace(F.col(name), "[^0-9]", "")
+    decimal_text = F.regexp_replace(F.col(name), ",", ".")
+    if format_name == "uri":
+        invalid = ~F.col(name).rlike(r"^https?://")
+    elif format_name == "positive_price":
+        invalid = (digits == "") | (digits.cast("decimal(18,0)") <= 0)
+    elif format_name == "timestamp":
+        invalid = F.to_timestamp(name).isNull()
+    elif format_name == "date":
+        invalid = F.to_date(name).isNull()
+    elif format_name == "rating_0_10":
+        value = decimal_text.cast("decimal(3,1)")
+        invalid = value.isNull() | (value < 0) | (value > 10)
+    elif format_name == "non_negative_integer":
+        value = digits.cast("bigint")
+        invalid = (digits == "") | value.isNull() | (value < 0)
+    elif format_name == "star_rating_0_5":
+        text = F.regexp_replace(F.regexp_extract(name, r"(\d+(?:[.,]\d+)?)", 1), ",", ".")
+        value = text.cast("decimal(2,1)")
+        invalid = (text == "") | value.isNull() | (value < 0) | (value > 5)
+    else:  # Guarded by contract.load_contract; retained for direct unit-test safety.
+        raise ValueError(f"Unsupported contract format: {format_name}")
+    return F.when(_non_blank(name) & invalid, F.lit(f"invalid_{name}"))
+
+
+def _semantic_failure_rules() -> list[Column]:
+    """Build Silver rules from the versioned YAML contract, not a parallel list."""
+    failures: list[Column] = []
+    for name, definition in config.CONTRACT["fields"].items():
+        if definition["required"]:
+            failures.append(F.when(~_non_blank(name), F.lit(f"required_{name}")))
+        format_name = definition.get("format")
+        if format_name:
+            failures.append(_format_failure(name, format_name))
+    for rule in config.CONTRACT.get("cross_field_rules", []):
+        if rule == "check_out_after_check_in":
+            failures.append(
+                F.when(
+                    F.to_date("check_in").isNotNull()
+                    & F.to_date("check_out").isNotNull()
+                    & (F.to_date("check_out") <= F.to_date("check_in")),
+                    F.lit("check_out_not_after_check_in"),
+                )
+            )
+        else:  # Guarded by contract.load_contract.
+            raise ValueError(f"Unsupported cross-field contract rule: {rule}")
+    return failures
+
+
+def _with_failure_rules(frame: DataFrame) -> DataFrame:
+    failure_arrays = [
+        F.when(rule.isNotNull(), F.array(rule)).otherwise(F.array())
+        for rule in _semantic_failure_rules()
+    ]
+    return frame.withColumn("failed_rules", F.flatten(F.array(*failure_arrays)))
+
+
+def _default_invalid_optional_metrics(frame: DataFrame) -> DataFrame:
+    """Replace malformed optional metrics with neutral values before validation."""
+    rating_text = F.regexp_replace(F.col("rating_text"), ",", ".")
+    rating_value = rating_text.cast("decimal(3,1)")
+    invalid_rating = _non_blank("rating_text") & (
+        rating_value.isNull() | (rating_value < 0) | (rating_value > 10)
     )
-    if missing or unknown or incompatible:
-        details = []
-        if missing:
-            details.append(f"missing={','.join(missing)}")
-        if unknown:
-            details.append(f"unknown={','.join(unknown)}")
-        if incompatible:
-            details.append(f"non_string={','.join(incompatible)}")
-        raise SchemaContractError("source schema does not match agoda_hotel contract: " + "; ".join(details))
+
+    review_digits = F.regexp_replace(F.col("review_count_text"), "[^0-9]", "")
+    review_value = review_digits.cast("bigint")
+    invalid_review_count = _non_blank("review_count_text") & (
+        (review_digits == "") | review_value.isNull() | (review_value < 0)
+    )
+
+    star_text = F.regexp_replace(
+        F.regexp_extract("star_rating_text", r"(\d+(?:[.,]\d+)?)", 1), ",", "."
+    )
+    star_value = star_text.cast("decimal(2,1)")
+    invalid_star_rating = _non_blank("star_rating_text") & (
+        (star_text == "") | star_value.isNull() | (star_value < 0) | (star_value > 5)
+    )
+
+    return (
+        frame
+        .withColumn("rating_text", F.when(invalid_rating, F.lit("0")).otherwise(F.col("rating_text")))
+        .withColumn(
+            "review_count_text",
+            F.when(invalid_review_count, F.lit("0")).otherwise(F.col("review_count_text")),
+        )
+        .withColumn(
+            "star_rating_text",
+            F.when(invalid_star_rating, F.lit("0 stars")).otherwise(F.col("star_rating_text")),
+        )
+    )
 
 
-def read_and_validate(
+def read_raw_records(
     spark: SparkSession,
     file_path: str,
     manifest: dict,
     manifest_path: PurePosixPath,
 ) -> tuple[DataFrame, DataFrame, int, int]:
-    """Return valid Bronze rows, quarantine rows, total count, and invalid count."""
-    validate_source_schema(spark, file_path)
-    source = spark.read.schema(schemas.CRAWLER_OUTPUT_SCHEMA).json(file_path)
-    payload = [F.coalesce(F.col(column).cast("string"), F.lit("")) for column in config.BUSINESS_OUTPUT_COLUMNS]
-    staged = (
-        source.select(
-            *[F.col(column) for column in config.BUSINESS_OUTPUT_COLUMNS],
+    """Read JSONL permissively for Bronze and preserve every original line.
+
+    Unknown fields and scalar representation changes are accepted. Only a line
+    that is not a JSON object is quarantined at this boundary.
+    """
+    lines = spark.read.text(file_path).withColumnRenamed("value", "raw_record_json")
+    parsed = (
+        lines
+        .withColumn("record", F.from_json("raw_record_json", schemas.CRAWLER_OUTPUT_SCHEMA))
+        .withColumn("is_json_object", F.col("record").isNotNull())
+    )
+    base = (
+        parsed.select(
+            "raw_record_json", "record.*",
             F.lit(manifest["batch_id"]).alias("batch_id"),
             F.lit(manifest["airflow_dag_id"]).alias("airflow_dag_id"),
             F.lit(manifest["airflow_run_id"]).alias("airflow_run_id"),
             F.lit(manifest["airflow_try_number"]).cast("long").alias("airflow_try_number"),
             F.lit(file_path).alias("source_file_path"),
             F.lit(str(manifest_path)).alias("manifest_path"),
-            F.sha2(F.concat_ws("\u001f", *payload), 256).alias("record_hash"),
             F.current_timestamp().alias("ingested_at"),
+            "is_json_object",
         )
         .withColumn(
             "record_id",
-            F.sha2(F.concat_ws("\u001f", "batch_id", "source_file_path", "record_hash"), 256),
+            F.sha2(
+                F.concat_ws(
+                    "\u001f",
+                    "batch_id",
+                    "source_file_path",
+                    "raw_record_json",
+                ),
+                256,
+            ),
         )
     )
-    non_blank = lambda name: F.col(name).isNotNull() & (F.length(F.trim(F.col(name))) > 0)
-    digits = lambda name: F.regexp_replace(F.col(name), "[^0-9]", "")
-    decimal_text = lambda name: F.regexp_replace(F.col(name), ",", ".")
-    star_text = F.regexp_replace(F.regexp_extract("star_rating_text", r"(\d+(?:[.,]\d+)?)", 1), ",", ".")
-    failures = [
-        F.when(~non_blank("hotel_name"), F.lit("required_hotel_name")),
-        F.when(~non_blank("hotel_url"), F.lit("required_hotel_url")),
-        F.when(non_blank("hotel_url") & ~F.col("hotel_url").rlike(r"^https?://"), F.lit("invalid_hotel_url")),
-        F.when(~non_blank("price_value"), F.lit("required_price_value")),
-        F.when(non_blank("price_value") & ((digits("price_value") == "") | (digits("price_value").cast("decimal(18,0)") <= 0)), F.lit("invalid_price_value")),
-        F.when(~non_blank("crawled_at") | F.to_timestamp("crawled_at").isNull(), F.lit("invalid_crawled_at")),
-        F.when(~non_blank("destination"), F.lit("required_destination")),
-        F.when(~non_blank("normalized_destination"), F.lit("required_normalized_destination")),
-        F.when(~non_blank("check_in") | F.to_date("check_in").isNull(), F.lit("invalid_check_in")),
-        F.when(~non_blank("check_out") | F.to_date("check_out").isNull(), F.lit("invalid_check_out")),
-        F.when((F.to_date("check_in").isNotNull()) & (F.to_date("check_out").isNotNull()) & (F.to_date("check_out") <= F.to_date("check_in")), F.lit("check_out_not_after_check_in")),
-        F.when(non_blank("rating_text") & ((decimal_text("rating_text").cast("decimal(3,1)").isNull()) | (decimal_text("rating_text").cast("decimal(3,1)") < 0) | (decimal_text("rating_text").cast("decimal(3,1)") > 10)), F.lit("invalid_rating")),
-        F.when(non_blank("review_count_text") & ((digits("review_count_text") == "") | (digits("review_count_text").cast("bigint") < 0)), F.lit("invalid_review_count")),
-        F.when(non_blank("star_rating_text") & ((star_text == "") | (star_text.cast("decimal(2,1)") < 0) | (star_text.cast("decimal(2,1)") > 5)), F.lit("invalid_star_rating")),
-    ]
-    failure_arrays = [
-        F.when(rule.isNotNull(), F.array(rule)).otherwise(F.array())
-        for rule in failures
-    ]
-    staged = staged.withColumn("failed_rules", F.flatten(F.array(*failure_arrays)))
-    duplicate_count = F.count("*").over(Window.partitionBy("record_id"))
-    staged = staged.withColumn(
-        "failed_rules",
-        F.when(duplicate_count > 1, F.array_union("failed_rules", F.array(F.lit("duplicate_record_id"))))
-        .otherwise(F.col("failed_rules")),
-    ).withColumn("raw_record_json", F.to_json(F.struct(*[F.col(column) for column in config.BUSINESS_OUTPUT_COLUMNS])))
+    valid = (
+        base.where("is_json_object")
+        .drop("is_json_object")
+        .select(
+            "record_id", *config.BUSINESS_OUTPUT_COLUMNS,
+            *config.AIRFLOW_METADATA_COLUMNS, "source_file_path", "manifest_path",
+            "ingested_at", "raw_record_json",
+        )
+        .dropDuplicates(["record_id"])
+    )
+    quarantined = (
+        base.where("NOT is_json_object")
+        .select(
+            "record_id", "batch_id", "airflow_dag_id", "airflow_run_id", "airflow_try_number",
+            "source_file_path", "manifest_path", "raw_record_json",
+            F.array(F.lit("malformed_json")).alias("failed_rules"),
+            F.lit("malformed_json").alias("failure_reason"),
+            F.lit("bronze").alias("quarantine_layer"),
+            F.current_timestamp().alias("quarantined_at"),
+        )
+        .dropDuplicates(["record_id"])
+    )
+    return valid, quarantined, base.count(), quarantined.count()
+
+
+def validate_silver_records(bronze: DataFrame) -> tuple[DataFrame, DataFrame]:
+    """Apply YAML business rules after the raw record is safely in Bronze."""
+    staged = _with_failure_rules(_default_invalid_optional_metrics(bronze))
     invalid = staged.where(F.size("failed_rules") > 0)
-    valid = staged.where(F.size("failed_rules") == 0).drop("failed_rules", "raw_record_json")
+    valid = staged.where(F.size("failed_rules") == 0).drop("failed_rules")
     quarantined = invalid.select(
         "record_id", "batch_id", "airflow_dag_id", "airflow_run_id", "airflow_try_number",
         "source_file_path", "manifest_path", "raw_record_json", "failed_rules",
         F.concat_ws(";", "failed_rules").alias("failure_reason"),
+        F.lit("silver").alias("quarantine_layer"),
         F.current_timestamp().alias("quarantined_at"),
     ).dropDuplicates(["record_id"])
-    return valid, quarantined, staged.count(), invalid.count()
+    return valid, quarantined
+
+
+def upsert_quarantine(spark: SparkSession, quarantined: DataFrame) -> None:
+    view_name = f"agoda_quarantine_stage_{uuid.uuid4().hex}"
+    quarantined.createOrReplaceTempView(view_name)
+    spark.sql(
+        f"""
+        MERGE INTO {config.QUARANTINE_TABLE} AS target
+        USING {view_name} AS source
+        ON target.record_id = source.record_id
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
+        """
+    )
+
+
+def exceeds_invalid_threshold(input_records: int, invalid_records: int) -> bool:
+    return (
+        invalid_records > config.MAX_INVALID_RECORDS
+        or invalid_records / input_records > config.MAX_INVALID_RATIO
+    )

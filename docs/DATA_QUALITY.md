@@ -17,6 +17,9 @@ records or overwriting pagination evidence from concurrent destinations.
 
 ## Output JSONL
 
+Public JSONL is business-only. Airflow batch metadata is supplied by the
+manifest and is appended by Bronze, not emitted on each crawler record.
+
 Mỗi dòng là một object JSON. File có tên:
 
 ```text
@@ -28,8 +31,7 @@ Các field public:
 ```text
 hotel_name, hotel_url, price_value, rating_text, review_count_text,
 star_rating_text, crawled_at, destination,
-normalized_destination, check_in, check_out, batch_id, airflow_dag_id,
-airflow_run_id, airflow_try_number
+normalized_destination, check_in, check_out
 ```
 
 Ba field bắt buộc là:
@@ -63,18 +65,20 @@ VERIFY_OPTIONAL_COVERAGE_STATUS=
 VERIFY_DISCARDED_RECORDS=
 ```
 
-## Databricks Bronze quality gate
+## Databricks Bronze and Silver quality gates
 
 The versioned source contract is `databricks/contracts/agoda_hotel.yaml`.
-Bronze rejects a JSONL schema with missing, unknown, or non-string fields.
-Updating the contract with an approved nullable field allows setup to add that
-field to Bronze; renames, type changes, and new required fields need an
-explicit migration.
+Bronze reads each JSONL line permissively. Unknown fields and source scalar
+representation changes are retained in `raw_record_json`; only a malformed JSON
+line is quarantined at this boundary. Bronze also verifies that the physical
+line count exactly matches the `publishable_records` declared by the manifest.
 
-Bronze quarantines records that violate required-field, URL, positive-price,
-timestamp, check-in/check-out, rating, review-count, star-rating, or duplicate
-record-ID rules. The valid portion proceeds to Bronze. The batch fails only
-after quarantine when invalid records exceed 10% of input or 200 records.
+The YAML contract is enforced in Silver. Required fields, URL, positive-price,
+timestamp, check-in/check-out, rating, review-count, star-rating, and
+cross-field rules are evaluated from the contract there. Invalid rows remain in
+Bronze and are written to quarantine with `quarantine_layer = silver`. Silver
+fails only after quarantine when invalid records exceed 10% of input or 200
+records.
 
 Use these Unity Catalog tables to investigate a run:
 

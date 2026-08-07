@@ -142,6 +142,11 @@ Kết quả mong đợi:
 {'status': 'success', 'tables_ready': 7}
 ```
 
+For existing Unity Catalog tables, rerun `setup_uc_objects_wrapper` once after
+uploading the new source and before the next daily Job. It adds
+`raw_record_json` to Bronze and `quarantine_layer` to the quarantine table, and
+performs the legacy `date`-to-`check_in_date` migration when needed.
+
 ### Cấu hình Databricks Job
 
 Tạo ba notebook tasks theo thứ tự:
