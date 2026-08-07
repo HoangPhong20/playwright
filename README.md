@@ -145,7 +145,9 @@ Kết quả mong đợi:
 For existing Unity Catalog tables, rerun `setup_uc_objects_wrapper` once after
 uploading the new source and before the next daily Job. It adds
 `raw_record_json` to Bronze and `quarantine_layer` to the quarantine table, and
-performs the legacy `date`-to-`check_in_date` migration when needed.
+performs the legacy `date`-to-`check_in_date` migration when needed. If an older
+Silver table still has `record_hash`, drop that legacy column before the next
+Job; the pipeline uses `record_id` as its idempotency key.
 
 ### Cấu hình Databricks Job
 

@@ -94,6 +94,14 @@ needed, adds `raw_record_json` to the Bronze table, and adds
 summary table with the new schema. For legacy Delta tables, setup automatically
 enables name-based column mapping before the rename.
 
+Older Silver tables can also retain a `record_hash` column from a previous
+schema. Drop it before the next daily Job because the current pipeline uses
+`record_id` as the idempotency key:
+
+```sql
+ALTER TABLE agoda.silver.agoda_hotels_history DROP COLUMN record_hash;
+```
+
 Bronze và Silver idempotent theo `record_id`. Gold đọc toàn bộ Silver history
 và ghi lại bốn bảng tổng hợp, nên các ngày cũ và dữ liệu batch mới luôn nhất
 quán.
