@@ -556,6 +556,7 @@ def with_stay_params(
             "rooms": str(rooms),
             "adults": str(adults),
             "children": str(children),
+            "currencyCode": "VND",
         }
     )
     return urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), ""))

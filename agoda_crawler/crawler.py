@@ -33,6 +33,7 @@ from agoda_crawler.listing.pagination import (
     capture_pagination_state as _capture_pagination_state,
     go_to_verified_page_start as _go_to_verified_page_start,
     pagination_change_evidence as _pagination_change_evidence,
+    end_of_results_reason as _end_of_results_reason,
 )
 from agoda_crawler.listing.records import (
     merge_records_into_results as _merge_records_into_results,
@@ -202,6 +203,7 @@ def crawl_agoda_search(
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
     detail_worker_semaphore=None,
+    pagination_outcome: Optional[Dict] = None,
 ) -> List[Dict]:
     """
     Crawl Agoda hotel search results and return a list of hotel records.
@@ -241,6 +243,7 @@ def crawl_agoda_search(
                 field_retry_timeout=field_retry_timeout,
                 field_retry_count=field_retry_count,
                 detail_worker_semaphore=detail_worker_semaphore,
+                pagination_outcome=pagination_outcome,
             )
         finally:
             if browser is not None:
@@ -273,6 +276,7 @@ def crawl_agoda_search_with_browser(
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
     detail_worker_semaphore=None,
+    pagination_outcome: Optional[Dict] = None,
 ) -> List[Dict]:
     """Crawl one Agoda search using an existing browser instance."""
     _validate_supported_occupancy(adults, rooms, children)
@@ -309,6 +313,8 @@ def crawl_agoda_search_with_browser(
         accepted_state: Optional[PaginationState] = None
         current_page = 1
         low_new_record_rounds = 0
+        job_status = "complete"
+        stop_reason: Optional[str] = None
         detail_pages_used = 0
         detail_seconds = 0.0
 
@@ -340,6 +346,10 @@ def crawl_agoda_search_with_browser(
             f"time={_format_seconds(page_result.elapsed_seconds)}"
         )
         while not _reached_page_limit(current_page, max_pages):
+            if _end_of_results_reason(page):
+                stop_reason = "end_of_results"
+                log("Pagination stopped: explicit end-of-results evidence")
+                break
             target_page = current_page + 1
             navigated = False
             for attempt in range(1, PAGINATION_NAVIGATION_ATTEMPTS + 1):
@@ -498,6 +508,12 @@ def crawl_agoda_search_with_browser(
                 break
             if not navigated:
                 duplicate_pages += 1
+                job_status = "failed"
+                stop_reason = (
+                    "duplicate_page"
+                    if page_statuses.get(target_page) == "duplicate_page"
+                    else "pagination_navigation_failed"
+                )
                 break
             if low_new_record_rounds >= LOW_NEW_RECORD_ROUNDS:
                 log(
@@ -505,7 +521,20 @@ def crawl_agoda_search_with_browser(
                     f"new_records_below_{LOW_NEW_RECORD_THRESHOLD} "
                     f"for {low_new_record_rounds} consecutive pages"
                 )
-                break
+                if not _reached_page_limit(current_page, max_pages):
+                    if _end_of_results_reason(page):
+                        stop_reason = "end_of_results"
+                    else:
+                        job_status = "incomplete"
+                        stop_reason = "low_new_records"
+                    break
+
+        if stop_reason is None:
+            stop_reason = (
+                "max_pages_reached"
+                if _reached_page_limit(current_page, max_pages)
+                else "end_of_results"
+            )
 
         all_results = list(results_by_key.values())
         timing["listing_seconds"] = max(0.0, _elapsed_seconds(listing_started_at) - detail_seconds)
@@ -513,7 +542,7 @@ def crawl_agoda_search_with_browser(
             f"Timing: listing={_format_seconds(timing['listing_seconds'])} "
             f"pages={pages_collected} records={len(all_results)}"
         )
-        _attach_pagination_summary(
+        summary = _attach_pagination_summary(
             all_results,
             pages_requested=requested_pages,
             pages_collected=pages_collected,
@@ -522,8 +551,12 @@ def crawl_agoda_search_with_browser(
             page_unique_record_counts=page_unique_record_counts,
             page_statuses=page_statuses,
             page_scroll_summaries=page_scroll_summaries,
+            status=job_status,
+            stop_reason=stop_reason,
         )
-        if enrich_details:
+        if pagination_outcome is not None:
+            pagination_outcome.update(summary)
+        if enrich_details and job_status == "complete":
             detail_batch_started_at = time.perf_counter()
             detail_pages_used = _enrich_pending_records(
                 context,

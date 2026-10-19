@@ -110,24 +110,30 @@ Manual runtime examples must provide an Airflow-compatible identity:
 Use the runtime defaults with an explicit manual batch identity:
 
 ```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id manual_001 `
-  --airflow-try-number 1 --date 2026-06-10
+$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
+$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
+py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
+  --airflow-try-number 1 --date $checkIn
 ```
 
 Fast smoke test:
 
 ```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id smoke_001 `
+$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
+$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
+py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
   --airflow-try-number 1 --destinations "Vung Tau" `
-  --date 2026-06-10 `
+  --date $checkIn `
   --max-pages 1 --workers 1 --no-enrich-details
 ```
 
 Isolate output for comparison:
 
 ```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id comparison_001 `
-  --airflow-try-number 1 --date 2026-06-10 `
+$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
+$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
+py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
+  --airflow-try-number 1 --date $checkIn `
   --output-dir data/airflow
 ```
 
@@ -173,7 +179,7 @@ The ignored `.env` is runtime configuration; code fallbacks belong in
 
 - Add or update focused pytest coverage for parser, selector, listing, pagination, enrichment, and config changes.
 - For Playwright-heavy behavior, isolate pure helpers where possible and use small fakes in tests.
-- Run `python -m pytest` before handing off code changes.
+- Run `py -m pytest` before handing off code changes.
 - For live crawler validation, prefer a bounded smoke command before an all-pages run.
 
 ## Output And Debug Policy

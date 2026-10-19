@@ -4,6 +4,11 @@ Thư mục này được upload nguyên vẹn vào Databricks Workspace. `agoda_
 Python package chứa logic ETL; các file trong `notebooks/` chỉ nhận parameter
 và gọi package.
 
+Với Databricks Free Edition, không dùng Account Console để tạo custom OAuth
+App. Xem [giới hạn và xác thực local](../README.md#databricks-free-edition-và-xác-thực-local).
+Các bước upload và chạy notebook bên dưới vẫn cần quyền tương ứng trong
+workspace; CLI OAuth local không tự cấu hình xác thực cho Airflow Docker.
+
 ## Upload và setup một lần
 
 1. Upload thư mục `databricks/` vào một Workspace folder, ví dụ

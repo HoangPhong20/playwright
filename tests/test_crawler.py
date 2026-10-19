@@ -1,4 +1,5 @@
 import pytest
+from urllib.parse import parse_qs, urlsplit
 
 from agoda_crawler.crawler import (
     _merge_missing_fields,
@@ -27,6 +28,7 @@ def test_with_stay_params_adds_dates_and_occupancy() -> None:
     assert "rooms=1" in url
     assert "adults=2" in url
     assert "children=0" in url
+    assert parse_qs(urlsplit(url).query)["currencyCode"] == ["VND"]
 
 
 def test_with_stay_params_keeps_custom_occupancy() -> None:
@@ -42,6 +44,16 @@ def test_with_stay_params_keeps_custom_occupancy() -> None:
     assert "rooms=2" in url
     assert "adults=3" in url
     assert "children=1" in url
+
+
+def test_with_stay_params_overrides_foreign_currency() -> None:
+    url = _with_stay_params(
+        "https://www.agoda.com/demo/hotel/demo.html?currencyCode=USD",
+        "2026-06-10",
+        "2026-06-12",
+    )
+
+    assert parse_qs(urlsplit(url).query)["currencyCode"] == ["VND"]
 
 
 def test_merge_missing_fields_fills_late_price_data() -> None:

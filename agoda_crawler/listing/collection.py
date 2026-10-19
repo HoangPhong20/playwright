@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from playwright.sync_api import Page
 
@@ -17,6 +16,7 @@ from agoda_crawler.extraction.parsers import (
     name_from_hotel_url as _name_from_hotel_url,
     parse_textual_fallback as _parse_textual_fallback,
 )
+from agoda_crawler.listing.records import merge_page_record
 from agoda_crawler.utils import compact_text
 
 
@@ -80,7 +80,7 @@ def normalize_hotel_url(raw_url: str, base_url: str) -> Optional[str]:
 
     url = urljoin(base_url, raw_url)
     split = urlsplit(url)
-    if "/hotel/" not in split.path.lower():
+    if "/hotel/" not in split.path.lower() and not _is_property_id_route(split):
         return None
 
     query = []
@@ -100,6 +100,27 @@ def normalize_hotel_url(raw_url: str, base_url: str) -> Optional[str]:
             "",
         )
     )
+
+
+def _is_property_id_route(split: SplitResult) -> bool:
+    host = (split.hostname or "").lower()
+    if host != "agoda.com" and not host.endswith(".agoda.com"):
+        return False
+
+    parts = [part for part in split.path.split("/") if part]
+    if (
+        len(parts) != 3
+        or not re.fullmatch(r"[a-z]{2}-[a-z]{2}", parts[0], re.IGNORECASE)
+        or any(part.lower() == "search" for part in parts)
+    ):
+        return False
+
+    property_ids = [
+        value
+        for key, value in parse_qsl(split.query, keep_blank_values=True)
+        if key.casefold() == "propertyid"
+    ]
+    return len(property_ids) == 1 and re.fullmatch(r"[0-9]+", property_ids[0]) is not None
 
 
 def collect_listing_snapshot(
@@ -126,7 +147,6 @@ def collect_listing_snapshot(
     anchorless_card_count = 0
     canonical_url_keys: set[str] = set()
     invalid_card_samples: List[Dict[str, Any]] = []
-    property_key_index: Dict[str, str] = {}
 
     for card_index, raw_card in enumerate(candidate_cards):
         raw_urls = [value for value in raw_card.get("urls", []) if value]
@@ -151,7 +171,6 @@ def collect_listing_snapshot(
             cards_without_name_count += 1
 
         property_id = _property_id(raw_card)
-        property_key = f"property:{property_id}" if property_id else None
         if not normalized_urls:
             cards_without_url_count += 1
             if not _has_hotel_signal(raw_card, name, raw_text):
@@ -164,22 +183,6 @@ def collect_listing_snapshot(
         canonical_url = _hotel_url_key(hotel_url) if hotel_url else None
         if canonical_url:
             canonical_url_keys.add(canonical_url)
-            record_key = f"url:{canonical_url}"
-        elif property_key and property_key in property_key_index:
-            record_key = property_key_index[property_key]
-        elif property_key:
-            record_key = property_key
-        else:
-            record_key = _partial_record_key(
-                name=name,
-                raw_text=raw_text,
-                page_number=page_number,
-                card_index=card_index,
-            )
-
-        if record_key in records_by_key:
-            _merge_card_urls(records_by_key[record_key], normalized_urls)
-            continue
 
         if not name and hotel_url:
             name = _name_from_hotel_url(hotel_url)
@@ -228,17 +231,7 @@ def collect_listing_snapshot(
                 },
             }
 
-        if hotel_url and property_key:
-            previous_key = property_key_index.get(property_key)
-            if previous_key and previous_key != record_key:
-                previous_record = records_by_key.pop(previous_key, None)
-                if previous_record is not None:
-                    _merge_record_fields(record, previous_record)
-                    property_key_index[property_key] = record_key
-
-        records_by_key[record_key] = record
-        if property_key:
-            property_key_index[property_key] = record_key
+        merge_page_record(records_by_key, record)
 
     unique_hotel_count = len(records_by_key)
     metrics = ListingCollectionMetrics(
@@ -501,24 +494,6 @@ def _looks_like_non_name(value: str) -> bool:
     return bool(len(value) <= 4 and any(char.isdigit() for char in value))
 
 
-def _partial_record_key(
-    name: Optional[str],
-    raw_text: Optional[str],
-    page_number: int,
-    card_index: int,
-) -> str:
-    if name:
-        return f"partial:{_identity_part(name)}|page:{page_number}"
-
-    source = compact_text(raw_text) or str(card_index)
-    digest = hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    return f"partial:{page_number}:{digest}:{card_index}"
-
-
-def _identity_part(value: Optional[str]) -> str:
-    return (compact_text(value) or "").casefold()
-
-
 def _collect_status(name: Optional[str], hotel_url: Optional[str]) -> str:
     missing = []
     if not hotel_url:
@@ -526,24 +501,6 @@ def _collect_status(name: Optional[str], hotel_url: Optional[str]) -> str:
     if not name:
         missing.append("missing_name")
     return "ok" if not missing else ",".join(missing)
-
-
-def _merge_card_urls(record: Dict, normalized_urls: List[str]) -> None:
-    if not normalized_urls:
-        return
-
-    existing = list(record.get("candidate_urls") or [])
-    for url in normalized_urls:
-        if url not in existing:
-            existing.append(url)
-    record["candidate_urls"] = existing
-
-
-def _merge_record_fields(record: Dict, other: Dict) -> None:
-    for field, value in other.items():
-        if value and not record.get(field):
-            record[field] = value
-    _merge_card_urls(record, list(other.get("candidate_urls") or []))
 
 
 def _evaluate_embedded_hotel_url_cards(page: Page) -> List[Dict]:
@@ -608,10 +565,10 @@ def _evaluate_listing_dom(
         'li[data-selenium="hotel-item"]',
     ]
     broad_selectors = [
-        'article',
-        'li',
-        'div[data-selenium*="hotel" i]',
-        'div[data-testid*="property" i]',
+        'article:has(a[href*="/hotel/"], a[href*="propertyId=" i])',
+        'li[data-hotelid]',
+        'li:has(a[href*="/hotel/"], a[href*="propertyId=" i])',
+        'div[data-testid^="property-card" i]',
     ]
     selectors = strict_selectors + broad_selectors if include_broad_selectors else strict_selectors
     try:
@@ -655,6 +612,11 @@ def _evaluate_listing_dom(
                     if (!value) return;
                     const text = String(value).replace(/&amp;/g, '&');
                     const matches = text.match(/(?:https?:\\/\\/[^"'<>\\s]+)?\\/[a-z]{2}-[a-z]{2}\\/[^"'<>\\s]+?\\/hotel\\/(?:all\\/)?[^"'<>\\s]+?\\.html(?:\\?[^"'<>\\s]*)?/gi) || [];
+                    if (matches.length === 0 && isPropertyIdRoute(text)) {
+                        urls.push(text);
+                        urlSources.push({ source, value: text.slice(0, 500) });
+                        return;
+                    }
                     if (matches.length === 0 && text.includes('/hotel/')) {
                         urls.push(text);
                         urlSources.push({ source, value: text.slice(0, 500) });
@@ -663,6 +625,24 @@ def _evaluate_listing_dom(
                     for (const match of matches) {
                         urls.push(match);
                         urlSources.push({ source, value: match.slice(0, 500) });
+                    }
+                };
+                const isPropertyIdRoute = (value) => {
+                    try {
+                        const parsed = new URL(value, window.location.href);
+                        const host = parsed.hostname.toLowerCase();
+                        const parts = parsed.pathname.split('/').filter(Boolean);
+                        const propertyIds = Array.from(parsed.searchParams.entries())
+                            .filter(([key]) => key.toLowerCase() === 'propertyid')
+                            .map(([, value]) => value);
+                        return (host === 'agoda.com' || host.endsWith('.agoda.com')) &&
+                            parts.length === 3 &&
+                            /^[a-z]{2}-[a-z]{2}$/i.test(parts[0]) &&
+                            !parts.some((part) => part.toLowerCase() === 'search') &&
+                            propertyIds.length === 1 &&
+                            /^\\d+$/.test(propertyIds[0]);
+                    } catch (error) {
+                        return false;
                     }
                 };
                 const collectUrlCandidates = (element) => {
@@ -726,7 +706,7 @@ def _evaluate_listing_dom(
                     if (element.matches && element.matches('a[href]')) anchors.unshift(element);
                     const hotelAnchors = anchors.filter((anchor) => {
                         const href = anchor.href || anchor.getAttribute('href') || '';
-                        return href.includes('/hotel/');
+                        return href.includes('/hotel/') || isPropertyIdRoute(href);
                     });
                     const nameAnchor = hotelAnchors.find((anchor) => (
                         anchor.innerText || anchor.getAttribute('aria-label') || anchor.getAttribute('title')
@@ -794,7 +774,9 @@ def _evaluate_listing_dom(
                     }
                 }
 
-                document.querySelectorAll('a[href*="/hotel/"]').forEach((anchor) => {
+                document.querySelectorAll('a[href*="/hotel/"], a[href*="propertyId=" i]').forEach((anchor) => {
+                    const href = anchor.href || anchor.getAttribute('href') || '';
+                    if (!href.includes('/hotel/') && !isPropertyIdRoute(href)) return;
                     add(anchor.closest('article, li, [data-testid*="card" i], [data-selenium*="hotel" i], div') || anchor, 'hotel-anchor-closest');
                 });
 

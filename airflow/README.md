@@ -64,7 +64,7 @@ DAG có năm task:
    một Databricks Job và chờ Bronze -> Silver -> Gold hoàn tất.
 5. `cleanup_local_output` chỉ xóa output local đã upload thành công quá 14 ngày.
 
-## Kiến trúc Databricks mục tiêu
+## Kiến trúc Databricks hiện tại
 
 Databricks Job, không phải Airflow, là nơi điều phối các bước xử lý dữ liệu:
 
@@ -76,7 +76,7 @@ Airflow chỉ trigger một Databricks Job sau khi `upload_to_uc_volume` thành 
 và truyền một `manifest_path` cụ thể. Databricks Job đọc duy nhất các JSONL
 được manifest khai báo; không quét toàn bộ Volume.
 
-Luồng Airflow mục tiêu sau khi thêm task trigger là:
+Luồng Airflow hiện tại là:
 
 ```text
 crawl_agoda -> verify_output -> upload_to_uc_volume
@@ -109,6 +109,12 @@ AGODA_AIRFLOW_RETRY_DELAY_MINUTES=5
 ```
 
 Sau khi đổi `.env`, recreate các Airflow services để container nhận biến mới.
+
+Đăng nhập OAuth bằng Databricks CLI trên Windows không tự xác thực cho các
+container. Script upload và trigger hiện dùng `DATABRICKS_HOST` cùng
+`DATABRICKS_TOKEN` trong môi trường container. Với Free Edition, xem phần
+[xác thực local](../README.md#databricks-free-edition-và-xác-thực-local);
+không cần tìm custom OAuth Client ID trong workspace Settings.
 
 Chỉ dùng một file cấu hình là root `../.env`. File này chứa cấu hình crawler,
 Airflow và Databricks, gồm các biến Airflow sau:

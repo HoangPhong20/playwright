@@ -182,3 +182,22 @@ def test_verification_summary_labels_unlimited_pages_as_all(capsys) -> None:
     assert "VERIFY_OPTIONAL_COVERAGE_STATUS=warning" in captured.out
     assert "VERIFY_DISCARDED_RECORDS=1" in captured.out
     assert "VERIFY_COVERAGE_STATUS=warning" in captured.out
+
+
+def test_verification_summary_reports_empty_job_outcome(capsys, tmp_path) -> None:
+    job = CrawlJob("Da Nang", "2026-06-10", "2026-06-11", tmp_path / "out.jsonl")
+    result = CrawlJobResult(
+        job=job,
+        records=[],
+        pagination={
+            "pages_requested": 5,
+            "pages_collected": 1,
+            "status": "incomplete",
+            "stop_reason": "low_new_records",
+            "page_unique_record_counts": {"1": 0},
+        },
+    )
+
+    print_verification_summary([], elapsed_seconds=1, job_results=[result])
+
+    assert "job_pages[Da Nang 2026-06-10]: 1/5 status=incomplete " in capsys.readouterr().out

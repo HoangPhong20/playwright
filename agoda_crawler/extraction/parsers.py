@@ -2,7 +2,7 @@
 import re
 import unicodedata
 from typing import Dict, Optional
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from agoda_crawler.utils import compact_text
 
@@ -92,16 +92,23 @@ def extract_price_candidate(text: str) -> Optional[str]:
         return None
 
     ascii_value = ascii_text(normalized_text)
-    amount_with_currency = (
-        r"(?:"
-        r"(?:\b(?:VND|USD|EUR|GBP|JPY|KRW|THB|SGD|AUD|CAD|CNY|HKD)\b|₫)"
-        r"\s*[\d][\d.,\s]*[\d]"
-        r"|"
-        r"[\d][\d.,\s]*[\d]\s*"
-        r"(?:\b(?:VND|USD|EUR|GBP|JPY|KRW|THB|SGD|AUD|CAD|CNY|HKD)\b|₫|đ\b)"
-        r")"
+    currency = (
+        r"(?:\b(?:VND|USD|EUR|GBP|JPY|KRW|THB|SGD|AUD|CAD|CNY|HKD)\b|"
+        r"\u20ab|[\u0111\u0110]\b|[$€£¥₩฿])"
     )
-    per_night_pattern = r"(?i)(?:per\s+night|moi\s+dem|mỗi\s+đêm|/dem|/đêm|\bdem\b|\bđêm\b)"
+    amount = (
+        r"(?:[-\u2212]\s*[\d][\d.,\s]*[\d]"
+        r"|\(\s*[\d][\d.,\s]*[\d]\s*\)"
+        r"|\+?\s*[\d][\d.,\s]*[\d])"
+    )
+    amount_with_currency = (
+        r"\(?\s*(?:" + currency + r"\s*" + amount
+        + r"|" + amount + r"\s*" + currency + r")\s*\)?"
+    )
+    per_night_pattern = (
+        r"(?i)(?:per\s+night|moi\s+dem|m\u1ed7i\s+\u0111\u00eam|"
+        r"/dem|/\u0111\u00eam|\bdem\b|\b\u0111\u00eam\b)"
+    )
 
     for source_text in (normalized_text, ascii_value):
         best_candidate = None
@@ -118,22 +125,20 @@ def extract_price_candidate(text: str) -> Optional[str]:
         if best_candidate:
             return best_candidate
 
-    patterns = [
-        r"(?i)\b(?:VND|USD|EUR|GBP|JPY|KRW|THB|SGD|AUD|CAD|CNY|HKD)\b\s*([\d][\d.,\s]*[\d])",
-        r"([\d][\d.,\s]*[\d])\s*(?i:\b(?:VND|USD|EUR|GBP|JPY|KRW|THB|SGD|AUD|CAD|CNY|HKD)\b)",
-        r"([\d][\d.,\s]*[\d])\s*(?:₫|đ\b)",
-        r"₫\s*([\d][\d.,\s]*[\d])",
-        r"(?i)(?:price|gia|per night|moi dem|tong cong|total).{0,80}?((?:[\d][\d.,\s]*[\d])\s*(?:VND|USD|EUR|GBP|JPY|KRW|THB|SGD|AUD|CAD|CNY|HKD|₫|đ\b)|(?:VND|USD|EUR|GBP|JPY|KRW|THB|SGD|AUD|CAD|CNY|HKD|₫)\s*[\d][\d.,\s]*[\d])",
-    ]
+    for source_text in (normalized_text, ascii_value):
+        for match in re.finditer(amount_with_currency, source_text, flags=re.IGNORECASE):
+            prefix = source_text[max(0, match.start() - 80):match.start()]
+            if re.search(
+                r"(?i)(?:price|gia|per\s+night|moi\s+dem|tong\s+cong|total)"
+                r"[^.;]{0,80}$",
+                prefix,
+            ):
+                return compact_text(match.group(0))
 
     for source_text in (normalized_text, ascii_value):
-        for pattern in patterns:
-            match = re.search(pattern, source_text, flags=re.IGNORECASE)
-            if not match:
-                continue
-            candidate = compact_text(match.group(0))
-            if candidate:
-                return candidate
+        fallback_match = re.search(amount_with_currency, source_text, flags=re.IGNORECASE)
+        if fallback_match:
+            return compact_text(fallback_match.group(0))
 
     return None
 
@@ -146,43 +151,39 @@ def canonicalize_price_value(value: Optional[str]) -> Optional[str]:
     if not text:
         return None
 
-    currency_map = {
-        "VND": [r"(?i)\bVND\b", r"\u20ab", r"\u0111"],
-        "USD": [r"(?i)\bUSD\b"],
-        "EUR": [r"(?i)\bEUR\b"],
-        "GBP": [r"(?i)\bGBP\b"],
-        "JPY": [r"(?i)\bJPY\b"],
-        "KRW": [r"(?i)\bKRW\b"],
-        "THB": [r"(?i)\bTHB\b"],
-        "SGD": [r"(?i)\bSGD\b"],
-        "AUD": [r"(?i)\bAUD\b"],
-        "CAD": [r"(?i)\bCAD\b"],
-        "CNY": [r"(?i)\bCNY\b"],
-        "HKD": [r"(?i)\bHKD\b"],
-    }
-
-    currency = None
-    for normalized_currency, patterns in currency_map.items():
-        if any(re.search(pattern, text) for pattern in patterns):
-            currency = normalized_currency
-            break
-    if not currency:
+    if re.search(r"(?i)\b(?:USD|EUR|GBP|JPY|KRW|THB|SGD|AUD|CAD|CNY|HKD)\b", text):
+        return None
+    if re.search(r"[$€£¥₩฿]", text):
+        return None
+    if not re.search(r"(?i)\bVND\b|[\u20ab\u0111\u0110]", text):
         return None
 
-    amount_match = re.search(r"([\d][\d.,\s]*[\d])", text)
+    amount_match = re.search(r"([+\-\u2212]?\s*[\d][\d.,\s]*[\d])", text)
     if not amount_match:
         return None
 
-    amount = amount_match.group(1)
-    cleaned_amount = re.sub(r"\s+", "", amount)
-    cleaned_amount = cleaned_amount.replace(",", "")
-    cleaned_amount = cleaned_amount.replace(".", "")
-    cleaned_amount = re.sub(r"[^\d]", "", cleaned_amount)
-    if not cleaned_amount:
+    amount = amount_match.group(1).strip()
+    if amount.startswith(("-", "\u2212")) or ("(" in text and ")" in text):
         return None
+    amount = amount.lstrip("+").strip()
+    if "," in amount and "." in amount:
+        return None
+    separator = "," if "," in amount else "." if "." in amount else None
+    if separator:
+        groups = amount.split(separator)
+        if not 1 <= len(groups[0]) <= 3 or any(len(group) != 3 for group in groups[1:]):
+            return None
+    elif " " in amount:
+        groups = amount.split()
+        if not 1 <= len(groups[0]) <= 3 or any(len(group) != 3 for group in groups[1:]):
+            return None
+    else:
+        groups = [amount]
+    if any(not group.isdigit() for group in groups):
+        return None
+    cleaned_amount = "".join(groups)
 
-    minimum_digits = 4 if currency == "VND" else 2
-    if len(cleaned_amount) < minimum_digits:
+    if len(cleaned_amount) < 4 or not any(digit != "0" for digit in cleaned_amount):
         return None
 
     return cleaned_amount
@@ -191,7 +192,15 @@ def canonicalize_price_value(value: Optional[str]) -> Optional[str]:
 def hotel_url_key(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path.rstrip("/").lower()
-    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", "", ""))
+    property_ids = [
+        value
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.casefold() == "propertyid"
+    ]
+    query = ""
+    if len(property_ids) == 1 and re.fullmatch(r"[0-9]+", property_ids[0]):
+        query = urlencode((("propertyId", property_ids[0]),))
+    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", query, ""))
 
 
 def parse_textual_fallback(raw_text: Optional[str]) -> Dict[str, Optional[str]]:

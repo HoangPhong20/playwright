@@ -71,30 +71,47 @@ def run_crawl_job_batch(
                     job.check_in,
                 ):
                     log("Job started")
-                    records = crawl_agoda_search_with_browser(
-                        browser,
-                        max_pages=max(0, args.max_pages),
-                        headless=args.headless,
-                        destination=job.destination,
-                        check_in=job.check_in,
-                        check_out=job.check_out,
-                        adults=args.adults,
-                        rooms=args.rooms,
-                        children=args.children,
-                        locale=args.locale,
-                        enrich_details=args.enrich_details,
-                        max_detail_pages=args.max_detail_pages,
-                        detail_concurrency=max(1, args.detail_concurrency),
-                        enrich_missing_only=args.enrich_missing_only,
-                        detail_timeout=args.detail_timeout,
-                        field_retry_timeout=max(0, args.field_retry_timeout),
-                        field_retry_count=max(0, args.field_retry_count),
-                        detail_worker_semaphore=detail_worker_semaphore,
-                        detail_fields=detail_fields,
-                        max_scroll_rounds=max(1, args.max_scroll_rounds),
-                        stable_rounds=max(1, args.stable_rounds),
-                        scroll_wait_ms=max(0, args.scroll_wait_ms),
-                    )
+                    pagination: Dict = {}
+                    try:
+                        records = crawl_agoda_search_with_browser(
+                            browser,
+                            max_pages=max(0, args.max_pages),
+                            headless=args.headless,
+                            destination=job.destination,
+                            check_in=job.check_in,
+                            check_out=job.check_out,
+                            adults=args.adults,
+                            rooms=args.rooms,
+                            children=args.children,
+                            locale=args.locale,
+                            enrich_details=args.enrich_details,
+                            max_detail_pages=args.max_detail_pages,
+                            detail_concurrency=max(1, args.detail_concurrency),
+                            enrich_missing_only=args.enrich_missing_only,
+                            detail_timeout=args.detail_timeout,
+                            field_retry_timeout=max(0, args.field_retry_timeout),
+                            field_retry_count=max(0, args.field_retry_count),
+                            detail_worker_semaphore=detail_worker_semaphore,
+                            detail_fields=detail_fields,
+                            max_scroll_rounds=max(1, args.max_scroll_rounds),
+                            stable_rounds=max(1, args.stable_rounds),
+                            scroll_wait_ms=max(0, args.scroll_wait_ms),
+                            pagination_outcome=pagination,
+                        )
+                    except Exception as error:
+                        error_line = str(error).splitlines()
+                        log(
+                            f"Job failed: {type(error).__name__}: "
+                            f"{error_line[0] if error_line else '(no message)'}"
+                        )
+                        pagination.setdefault("pages_requested", max(0, args.max_pages))
+                        pagination.setdefault("pages_collected", 0)
+                        pagination.update(
+                            status="failed",
+                            stop_reason="crawl_error",
+                            error=f"{type(error).__name__}: {error}",
+                        )
+                        records = []
 
                 annotated_records: List[Dict] = []
                 for item in records:
@@ -107,7 +124,13 @@ def run_crawl_job_batch(
                     if args.print_records:
                         print(as_json(project_output_record(annotated)))
                     annotated_records.append(annotated)
-                results.append(CrawlJobResult(job=job, records=annotated_records))
+                results.append(
+                    CrawlJobResult(
+                        job=job,
+                        records=annotated_records,
+                        pagination=pagination,
+                    )
+                )
         finally:
             browser.close()
     return results
@@ -160,8 +183,34 @@ def _run_from_args(args) -> None:
     _prepare_run_output_directory(run_output_dir)
     jobs = build_crawl_jobs(args, destinations, stays, output_dir=run_output_dir)
     manifest_path = run_output_dir / "run_manifest.json"
-    manifest = _new_run_manifest(run_context, args, destinations, stays)
+    manifest = _new_run_manifest(run_context, args, destinations, stays, jobs)
     _write_run_manifest(manifest_path, manifest)
+    try:
+        _run_created_attempt(
+            args,
+            destinations,
+            stays,
+            run_context,
+            run_output_dir,
+            jobs,
+            manifest_path,
+            manifest,
+        )
+    except Exception as error:
+        _mark_failed_run(manifest_path, error)
+        raise
+
+
+def _run_created_attempt(
+    args,
+    destinations: List[str],
+    stays: List[tuple[str, str]],
+    run_context: RunContext,
+    run_output_dir: Path,
+    jobs: List[CrawlJob],
+    manifest_path: Path,
+    manifest: Dict,
+) -> None:
     detail_fields = parse_detail_fields(args.detail_fields)
     detail_worker_semaphore = threading.BoundedSemaphore(
         max(1, args.total_detail_concurrency)
@@ -210,6 +259,14 @@ def _run_from_args(args) -> None:
             detail_worker_semaphore,
             detail_fields,
         )
+        manifest_jobs = [
+            item for item in manifest["jobs"] if item["check_in"] == check_in
+        ]
+        for result, job_outcome in zip(stay_results, manifest_jobs):
+            job_outcome.update(result.pagination)
+            job_outcome["status"] = result.pagination.get("status", "failed")
+            job_outcome["stop_reason"] = result.pagination.get("stop_reason", "crawl_error")
+        _write_run_manifest(manifest_path, manifest)
         stay_records = [
             record
             for result in stay_results
@@ -231,7 +288,12 @@ def _run_from_args(args) -> None:
             )
         summarize(public_records)
         elapsed_seconds = int(time.perf_counter() - stay_started_at)
-        print_verification_summary(public_records, elapsed_seconds, discarded_records)
+        print_verification_summary(
+            public_records,
+            elapsed_seconds,
+            discarded_records,
+            job_results=stay_results,
+        )
         print(f"Saved JSONL: {output_path}\n")
         manifest["stays"].append(
             {
@@ -246,6 +308,16 @@ def _run_from_args(args) -> None:
             }
         )
         _write_run_manifest(manifest_path, manifest)
+        incomplete_jobs = [
+            item
+            for item in manifest["jobs"]
+            if item["check_in"] == check_in and item["status"] != "complete"
+        ]
+        if incomplete_jobs:
+            reasons = ", ".join(
+                f"{item['destination']}:{item['stop_reason']}" for item in incomplete_jobs
+            )
+            raise RuntimeError(f"Crawl jobs did not complete: {reasons}")
 
     manifest["status"] = "complete"
     manifest["finished_at"] = _utc_now()
@@ -255,11 +327,7 @@ def _run_from_args(args) -> None:
 
 def run_from_args(args) -> None:
     """Run one immutable crawler attempt and record a terminal manifest state."""
-    try:
-        _run_from_args(args)
-    except Exception as error:
-        _mark_failed_run(args, error)
-        raise
+    _run_from_args(args)
 
 
 def _job_log_prefix(job: CrawlJob) -> str:
@@ -271,6 +339,7 @@ def _new_run_manifest(
     args,
     destinations: List[str],
     stays: List[tuple[str, str]],
+    jobs: List[CrawlJob],
 ) -> Dict:
     return {
         "run_id": run_context.airflow_run_id,
@@ -287,6 +356,18 @@ def _new_run_manifest(
             {"check_in": check_in, "check_out": check_out}
             for check_in, check_out in stays
         ],
+        "jobs": [
+            {
+                "destination": job.destination,
+                "check_in": job.check_in,
+                "check_out": job.check_out,
+                "pages_requested": max(0, args.max_pages),
+                "pages_collected": 0,
+                "status": "pending",
+                "stop_reason": None,
+            }
+            for job in jobs
+        ],
         "stays": [],
     }
 
@@ -297,27 +378,28 @@ def _write_run_manifest(path: Path, manifest: Dict) -> None:
 
 def _prepare_run_output_directory(run_output_dir: Path) -> None:
     """Prevent a manual rerun from appending into an existing attempt."""
-    if run_output_dir.exists() and any(run_output_dir.iterdir()):
+    try:
+        run_output_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as error:
         raise FileExistsError(
             "Crawler attempt output already exists: "
             f"{run_output_dir}. Use a new Airflow run ID or try number."
-        )
-    run_output_dir.mkdir(parents=True, exist_ok=True)
+        ) from error
 
 
-def _mark_failed_run(args, error: Exception) -> None:
+def _mark_failed_run(manifest_path: Path, error: Exception) -> None:
     """Persist failure metadata when the initial manifest was already created."""
     try:
-        run_context = run_context_from_args(args)
-        manifest_path = run_context.output_directory(args.output_dir) / "run_manifest.json"
         if not manifest_path.is_file():
             return
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("status") == "complete":
-            return
         manifest["status"] = "failed"
         manifest["finished_at"] = _utc_now()
         manifest["error"] = f"{type(error).__name__}: {error}"
+        for job in manifest.get("jobs", []):
+            if isinstance(job, dict) and job.get("status") == "pending":
+                job["status"] = "failed"
+                job["stop_reason"] = "crawl_error"
         _write_run_manifest(manifest_path, manifest)
     except (OSError, ValueError, json.JSONDecodeError):
         # The original crawler exception remains the most actionable failure.

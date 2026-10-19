@@ -59,6 +59,76 @@ def test_validate_manifest_accepts_expected_batch_and_output(tmp_path):
     assert result["publishable_records"] == 1
 
 
+def _complete_job_outcome() -> dict:
+    return {
+        "destination": "Vung Tau",
+        "check_in": "2026-08-15",
+        "check_out": "2026-08-16",
+        "pages_requested": 5,
+        "pages_collected": 1,
+        "status": "complete",
+        "stop_reason": "end_of_results",
+        "page_statuses": {"1": "collected"},
+    }
+
+
+def _new_manifest_jobs() -> dict:
+    return {
+        "destinations": ["Vung Tau"],
+        "planned_stays": [
+            {"check_in": "2026-08-15", "check_out": "2026-08-16"}
+        ],
+        "jobs": [_complete_job_outcome()],
+    }
+
+
+def test_validate_manifest_accepts_explicit_end_before_page_upper_bound(tmp_path):
+    manifest_path = write_manifest(tmp_path, **_new_manifest_jobs())
+
+    result = validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
+
+    assert result["publishable_records"] == 1
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda job: job.update(status="incomplete", stop_reason="low_new_records"), "status"),
+        (lambda job: job.update(stop_reason="max_pages_reached"), "page limit"),
+    ],
+)
+def test_validate_manifest_rejects_incomplete_or_conflicting_job_outcomes(
+    tmp_path, mutation, message
+):
+    job = _complete_job_outcome()
+    mutation(job)
+    manifest_path = write_manifest(tmp_path, **{**_new_manifest_jobs(), "jobs": [job]})
+
+    with pytest.raises(ValueError, match=message):
+        validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
+
+
+def test_validate_manifest_rejects_missing_planned_job_outcome(tmp_path):
+    manifest_data = _new_manifest_jobs()
+    manifest_data["destinations"].append("Da Nang")
+    manifest_path = write_manifest(tmp_path, **manifest_data)
+
+    with pytest.raises(ValueError, match="do not match planned jobs"):
+        validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
+
+
+def test_validate_manifest_rejects_inconsistent_collected_page_statuses(tmp_path):
+    job = _complete_job_outcome()
+    job["pages_collected"] = 2
+    manifest_path = write_manifest(
+        tmp_path,
+        **{**_new_manifest_jobs(), "jobs": [job]},
+    )
+
+    with pytest.raises(ValueError, match="page statuses"):
+        validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
+
+
 def test_expected_manifest_path_is_scoped_to_batch_and_attempt(tmp_path):
     path = validate_latest_run.expected_manifest_path(tmp_path, RUN_CONTEXT)
 

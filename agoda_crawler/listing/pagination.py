@@ -1,10 +1,11 @@
 """Pagination state and verification helpers for Agoda result pages."""
 from dataclasses import dataclass
+import re
 from typing import Dict, List, Optional
-from urllib.parse import urlparse, urlunparse
 
 from playwright.sync_api import Page
 
+from agoda_crawler.extraction.parsers import hotel_url_key
 from agoda_crawler.navigation import go_to_next_page, go_to_results_page
 from agoda_crawler.listing.scrolling import scroll_y
 from agoda_crawler.utils.logging import log_ignored_error
@@ -30,10 +31,14 @@ def attach_pagination_summary(
     page_unique_record_counts: Dict[int, int],
     page_statuses: Dict[int, str],
     page_scroll_summaries: Dict[int, Dict],
-) -> None:
+    status: str,
+    stop_reason: str,
+) -> Dict:
     summary = {
         "pages_requested": pages_requested,
         "pages_collected": pages_collected,
+        "status": status,
+        "stop_reason": stop_reason,
         "duplicate_pages": duplicate_pages,
         "page_unique_url_counts": {
             str(page_number): count
@@ -65,6 +70,73 @@ def attach_pagination_summary(
     }
     for record in records:
         record["_pagination"] = summary
+    return summary
+
+
+def pagination_end_reason(state: Dict) -> Optional[str]:
+    """Return end-of-results only when the page exposes explicit evidence."""
+    visible_next_count = state.get("visible_next_count", 0)
+    if visible_next_count > 0:
+        return "next_control_disabled" if state.get("next_disabled") is True else None
+    text = str(state.get("pagination_text") or "")
+    for match in re.finditer(r"(?:page\s*)?(\d+)\s*(?:of|/|trên)\s*(\d+)", text, re.I):
+        current, total = int(match.group(1)), int(match.group(2))
+        if current > 0 and current == total:
+            return "page_count_reached"
+    return None
+
+
+def end_of_results_reason(page: Page) -> Optional[str]:
+    """Inspect visible pagination evidence without treating missing controls as EOF."""
+    try:
+        state = page.evaluate(
+            """
+            () => {
+                const nextSelectors = [
+                    '#paginationNext',
+                    '[data-selenium="pagination-next-btn"]',
+                    'button[id*="paginationNext" i]',
+                    'button[data-element-name*="pagination-next" i]',
+                    'a[aria-label*="next" i]',
+                    'button[aria-label*="next" i]',
+                    'a[aria-label*="tiếp" i]',
+                    'button[aria-label*="tiếp" i]'
+                ];
+                const isVisible = (element) => {
+                    const style = window.getComputedStyle(element);
+                    return element.getClientRects().length > 0 &&
+                        style.display !== 'none' &&
+                        style.visibility !== 'hidden' &&
+                        style.opacity !== '0';
+                };
+                const nextControls = [];
+                for (const selector of nextSelectors) {
+                    nextControls.push(...document.querySelectorAll(selector));
+                }
+                const visibleNext = [...new Set(nextControls)].filter(isVisible);
+                const isDisabled = (element) => {
+                    const className = String(element.className || '');
+                    return element.disabled ||
+                        element.getAttribute('aria-disabled') === 'true' ||
+                        element.hasAttribute('disabled') ||
+                        /disabled|inactive/i.test(className);
+                };
+                const current = [...document.querySelectorAll('[aria-current="page"]')]
+                    .find(isVisible);
+                const root = current && current.closest(
+                    'nav, [role="navigation"], [class*="pagination" i], [data-selenium*="pagination" i]'
+                );
+                return {
+                    visible_next_count: visibleNext.length,
+                    next_disabled: visibleNext.length > 0 && visibleNext.every(isDisabled),
+                    pagination_text: root ? (root.innerText || '') : ''
+                };
+            }
+            """
+        )
+    except Exception:
+        return None
+    return pagination_end_reason(state) if isinstance(state, dict) else None
 
 
 def capture_pagination_state(
@@ -206,6 +278,4 @@ def go_to_verified_page_start(page: Page, target_page: int, prefer_next: bool) -
 
 
 def _canonical_hotel_url(hotel_url: str) -> str:
-    parsed = urlparse(hotel_url)
-    path = parsed.path.rstrip("/").lower()
-    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", "", ""))
+    return hotel_url_key(hotel_url)

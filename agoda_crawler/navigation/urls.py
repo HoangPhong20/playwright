@@ -28,6 +28,7 @@ def search_page_urls(page_url: str, page_number: int) -> list[str]:
     query = dict(parse_qsl(split.query, keep_blank_values=True))
     if "city" not in query:
         return []
+    query["currencyCode"] = "VND"
 
     urls: list[str] = []
     for param_name in ("page", "pageNumber", "pageIndex"):
@@ -188,6 +189,7 @@ def with_search_dates(
             "adults": str(adults),
             "children": str(children),
             "textToSearch": destination,
+            "currencyCode": "VND",
         }
     )
     if rich:
@@ -203,7 +205,6 @@ def with_search_dates(
                 "missingChildAges": "false",
                 "travellerType": "1",
                 "showReviewSubmissionEntry": "false",
-                "currencyCode": query.get("currencyCode", "VND"),
                 "isFreeOccSearch": "false",
             }
         )

@@ -66,6 +66,24 @@ def test_price_value_from_text_rejects_false_positive_short_numbers() -> None:
     assert _price_value_from_text("Gia moi dem VND 1,155,203") == "1155203"
 
 
+def test_price_value_from_text_is_vnd_only_and_rejects_invalid_amounts() -> None:
+    assert _price_value_from_text("USD 100.50") is None
+    assert _price_value_from_text("$100.000 VND") is None
+    assert _price_value_from_text("-100000 VND") is None
+    assert _price_value_from_text("VND -100000") is None
+    assert _price_value_from_text("Price -100000 VND") is None
+    assert _price_value_from_text("(100000 VND)") is None
+    assert _price_value_from_text("VND 1.000,50") is None
+    assert _price_value_from_text("VND 0000") is None
+    assert _price_value_from_text("VND 0.000") is None
+
+
+def test_price_value_from_text_keeps_valid_nightly_price_before_discount() -> None:
+    text = "VND 1.000.000 per night; discount -100000 VND"
+
+    assert _price_value_from_text(text) == "1000000"
+
+
 def test_price_value_from_text_prefers_discounted_per_night_price() -> None:
     text = "Gia Goc: 2.419.171 ₫ 2.419.171 ₫ -71% 702.050 ₫ Moi dem, chua co thue"
 
@@ -78,7 +96,7 @@ def test_price_value_from_text_does_not_treat_vietnamese_d_as_prefix_currency() 
     assert _price_value_from_text(text) == "673391"
 
 
-def test_hotel_url_key_ignores_query_and_fragment() -> None:
+def test_hotel_url_key_ignores_non_identity_query_and_fragment() -> None:
     first = (
         "https://www.agoda.com/vi-vn/demo-hotel/hotel/vung-tau-vn.html"
         "?searchrequestid=aaa&tspTypes=8#rooms"
@@ -87,6 +105,30 @@ def test_hotel_url_key_ignores_query_and_fragment() -> None:
         "https://www.agoda.com/vi-vn/demo-hotel/hotel/vung-tau-vn.html"
         "?searchrequestid=bbb&tspTypes=1"
     )
+
+    assert _hotel_url_key(first) == _hotel_url_key(second)
+
+
+def test_hotel_url_key_preserves_property_id_and_ignores_stay_parameters() -> None:
+    first = (
+        "https://www.agoda.com/vi-vn/demo-city/vung-tau"
+        "?checkIn=2026-11-09&propertyId=111&checkOut=2026-11-10&cid=1#rooms"
+    )
+    same_property = (
+        "https://www.agoda.com/vi-vn/demo-city/vung-tau"
+        "?PROPERTYID=111&checkOut=2026-12-10&checkIn=2026-12-09&utm_source=test"
+    )
+    different_property = (
+        "https://www.agoda.com/vi-vn/demo-city/vung-tau?propertyId=222"
+    )
+
+    assert _hotel_url_key(first) == _hotel_url_key(same_property)
+    assert _hotel_url_key(first) != _hotel_url_key(different_property)
+
+
+def test_hotel_url_key_keeps_legacy_hotel_url_identity() -> None:
+    first = "https://www.agoda.com/vi-vn/demo/hotel/demo.html?cid=1&checkIn=2026-11-09"
+    second = "https://www.agoda.com/vi-vn/demo/hotel/demo.html?cid=2&checkIn=2026-12-09"
 
     assert _hotel_url_key(first) == _hotel_url_key(second)
 
@@ -183,8 +225,6 @@ def test_detail_text_parsers_handle_vietnamese_review_and_stars() -> None:
 
 
 def test_textual_fallback_returns_empty_values_for_blank_text() -> None:
-    raw = "252 Duong Ba Cu Phuong 3, Phường 3, Vung Tau, Viet Nam"
-
     parsed = _parse_textual_fallback("")
 
     assert parsed["price_value"] is None

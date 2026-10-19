@@ -47,6 +47,12 @@ thành công và ghi cảnh báo trong summary.
 
 `rating_text`, `review_count_text`, và `star_rating_text` là optional. Record thiếu các field này vẫn được ghi ra JSONL nếu đủ ba field bắt buộc.
 
+`price_value` is a positive integer amount in VND serialized as a string. Search
+and detail URLs request `currencyCode=VND`; the parser rejects foreign currency,
+negative/accounting values, zero, and decimal or ambiguously grouped amounts.
+Periods, commas, and spaces are accepted as VND thousands separators when every
+group after the first contains three digits.
+
 ## Coverage optional
 
 Mỗi field optional phải có coverage **lớn hơn** ngưỡng cấu hình. Mặc định là `90`, nghĩa là coverage đúng `90.0%` vẫn là warning; chỉ `> 90.0%` mới pass.
@@ -91,6 +97,26 @@ agoda.raw.agoda_pipeline_audit
 
 Thứ tự identity ưu tiên là `canonical_url`, URL chuẩn hóa, `listing_property_id`, rồi fallback `hotel_name`. Merge chỉ bổ sung field đang thiếu; không ghi đè dữ liệu đã có. Vì vậy tổng `page_records` có thể cao hơn tổng record cuối khi Agoda lặp listing giữa các page.
 
+Agoda canonical URL keys retain a numeric `propertyId` query parameter because
+multiple properties can share the same path. Stay dates and tracking parameters
+do not affect that key. Observations with the same property identity merge in
+either order; different property IDs remain separate even when the display name
+matches.
+
+## Pagination completeness
+
+The manifest records one outcome for every planned destination and stay in
+`jobs`, including jobs that return no records. A job is complete when it reaches
+its configured `max_pages` upper bound or the visible pagination controls
+confirm the end of results. A lower page count is valid when the site confirms
+the end; it is not required to equal `max_pages`.
+
+Navigation failures, duplicate-page exhaustion, and the low-new-record heuristic
+are recorded as failed or incomplete outcomes. The heuristic still stops early,
+but it does not prove that Agoda returned every page. Downstream validation
+rejects any incomplete job when the `jobs` field is present. Older complete
+manifests without `jobs` keep their prior validation behavior.
+
 ## Detail enrichment
 
 Detail chỉ chạy khi bật `--enrich-details` và record thiếu một field nằm trong `--detail-fields`. Default detail fields là:
@@ -104,7 +130,9 @@ price_value,rating_text,review_count_text
 ## Quy tắc khi thay đổi code
 
 1. Không đưa record thiếu `hotel_name`, `hotel_url`, hoặc `price_value` vào JSONL public.
-2. Không coi `VERIFY_COVERAGE_STATUS=success` là đủ nếu `pages_collected` thấp hơn page yêu cầu hoặc có duplicate page.
+2. Use the per-job manifest outcome to assess pagination; a confirmed end of
+   results may collect fewer pages than the configured upper bound, while a
+   low-new-record stop or failed transition must not be published as complete.
 3. Khi đổi selector/parser, thêm test fixture hoặc fake nhỏ cho format mới.
 4. Không dùng lại cùng `airflow_run_id` và `airflow_try_number` cho benchmark;
    mỗi attempt directory là immutable.

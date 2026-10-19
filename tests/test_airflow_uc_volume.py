@@ -185,9 +185,23 @@ def test_trigger_rejects_receipt_for_another_batch(tmp_path):
         )
 
 
-def test_cleanup_only_removes_old_attempts_with_a_receipt(tmp_path):
+def test_cleanup_retains_old_crawl_with_recent_upload_receipt(tmp_path):
     run_dir = write_complete_attempt(tmp_path, datetime.now(timezone.utc) - timedelta(days=15))
     receipt = {**RUN_CONTEXT.record_metadata(), "uploaded_at": datetime.now(timezone.utc).isoformat()}
+    (run_dir / "upload_receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+    deleted = cleanup_local_output.cleanup_old_attempts(tmp_path, retention_days=14)
+
+    assert deleted == []
+    assert run_dir.is_dir()
+
+
+def test_cleanup_removes_recent_crawl_with_expired_upload_receipt(tmp_path):
+    run_dir = write_complete_attempt(tmp_path, datetime.now(timezone.utc))
+    receipt = {
+        **RUN_CONTEXT.record_metadata(),
+        "uploaded_at": (datetime.now(timezone.utc) - timedelta(days=15)).isoformat(),
+    }
     (run_dir / "upload_receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
 
     deleted = cleanup_local_output.cleanup_old_attempts(tmp_path, retention_days=14)
@@ -198,7 +212,10 @@ def test_cleanup_only_removes_old_attempts_with_a_receipt(tmp_path):
 
 def test_cleanup_removes_debug_for_the_same_uploaded_batch(tmp_path):
     run_dir = write_complete_attempt(tmp_path, datetime.now(timezone.utc) - timedelta(days=15))
-    receipt = {**RUN_CONTEXT.record_metadata(), "uploaded_at": datetime.now(timezone.utc).isoformat()}
+    receipt = {
+        **RUN_CONTEXT.record_metadata(),
+        "uploaded_at": (datetime.now(timezone.utc) - timedelta(days=15)).isoformat(),
+    }
     (run_dir / "upload_receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     debug_root = tmp_path / "debug"
     debug_dir = debug_root / RUN_CONTEXT.path_batch_id
@@ -214,6 +231,20 @@ def test_cleanup_removes_debug_for_the_same_uploaded_batch(tmp_path):
 
 def test_cleanup_keeps_attempt_without_upload_receipt(tmp_path):
     run_dir = write_complete_attempt(tmp_path, datetime.now(timezone.utc) - timedelta(days=15))
+
+    deleted = cleanup_local_output.cleanup_old_attempts(tmp_path, retention_days=14)
+
+    assert deleted == []
+    assert run_dir.is_dir()
+
+
+@pytest.mark.parametrize("uploaded_at", [None, "not-a-timestamp"])
+def test_cleanup_keeps_attempt_with_missing_or_malformed_upload_time(tmp_path, uploaded_at):
+    run_dir = write_complete_attempt(tmp_path, datetime.now(timezone.utc) - timedelta(days=30))
+    receipt = {**RUN_CONTEXT.record_metadata()}
+    if uploaded_at is not None:
+        receipt["uploaded_at"] = uploaded_at
+    (run_dir / "upload_receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
 
     deleted = cleanup_local_output.cleanup_old_attempts(tmp_path, retention_days=14)
 

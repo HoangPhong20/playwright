@@ -1,4 +1,5 @@
 from agoda_crawler.listing.collection import collect_listing_snapshot, normalize_hotel_url
+from agoda_crawler.listing.records import merge_records_into_results
 
 
 def test_normalize_hotel_url_removes_tracking_params() -> None:
@@ -12,6 +13,32 @@ def test_normalize_hotel_url_removes_tracking_params() -> None:
 
 def test_normalize_hotel_url_rejects_non_hotel_url() -> None:
     assert normalize_hotel_url("/vi-vn/search?city=17190", "https://www.agoda.com") is None
+
+
+def test_normalize_hotel_url_accepts_agoda_property_id_route_and_keeps_identity() -> None:
+    url = normalize_hotel_url(
+        "https://www.agoda.com/vi-vn/example-property/vung-tau"
+        "?propertyId=123&checkIn=2026-11-09&checkOut=2026-11-10&cid=-1",
+        "https://www.agoda.com/vi-vn/search?city=17190",
+    )
+
+    assert url == (
+        "https://www.agoda.com/vi-vn/example-property/vung-tau"
+        "?propertyId=123&checkIn=2026-11-09&checkOut=2026-11-10"
+    )
+
+
+def test_normalize_hotel_url_rejects_invalid_property_id_routes() -> None:
+    rejected = [
+        "https://www.agoda.com/vi-vn/example-property/vung-tau",
+        "https://www.agoda.com/vi-vn/example-property/vung-tau?propertyId=abc",
+        "https://example.com/vi-vn/example-property/vung-tau?propertyId=123",
+        "https://www.agoda.com/vi-vn/search/example-property?propertyId=123",
+        "https://www.agoda.com/vi-vn/example-property/vung-tau?propertyId=123&PROPERTYID=456",
+    ]
+
+    for url in rejected:
+        assert normalize_hotel_url(url, "https://www.agoda.com") is None
 
 
 class _ListingPage:
@@ -264,6 +291,91 @@ def test_collect_listing_snapshot_merges_partial_with_url_by_property_id() -> No
     assert snapshot.records[0]["listing_property_id"] == "123"
     assert snapshot.records[0]["hotel_url"] == "https://www.agoda.com/vi-vn/lazy-hotel/hotel/vung-tau-vn.html"
     assert snapshot.records[0]["record_kind"] == "full_record"
+
+
+class _CandidateCardsPage:
+    url = "https://www.agoda.com/vi-vn/search?city=17190"
+
+    def __init__(self, cards):
+        self.cards = cards
+
+    def evaluate(self, script: str, *args):
+        if "scrollY" in script:
+            return 0
+        if "document.documentElement" in script:
+            return []
+        return self.cards
+
+
+def test_property_id_route_snapshot_keeps_44_distinct_hotels_and_prices() -> None:
+    cards = [
+        {
+            "urls": [
+                "https://www.agoda.com/vi-vn/shared-city/vung-tau"
+                f"?propertyId={property_id}"
+            ],
+            "name": f"Demo Hotel {property_id}",
+            "text": f"Demo Hotel {property_id} Gia moi dem VND 500.000",
+        }
+        for property_id in range(1000, 1044)
+    ]
+
+    snapshot = collect_listing_snapshot(
+        _CandidateCardsPage(cards), '[data-selenium="hotel-item"]', 1
+    )
+
+    assert len(snapshot.records) == 44
+    assert snapshot.metrics.unique_canonical_url_count == 44
+    assert snapshot.metrics.unique_hotel_count == 44
+    assert all(record["price_value"] == "500000" for record in snapshot.records)
+    assert {
+        record["canonical_url"].rsplit("=", 1)[-1] for record in snapshot.records
+    } == {str(property_id) for property_id in range(1000, 1044)}
+
+
+def test_partial_and_full_snapshots_merge_in_either_order_for_44_properties() -> None:
+    partial_cards = [
+        {
+            "urls": [],
+            "name": f"Demo Hotel {property_id}",
+            "text": f"Demo Hotel {property_id} No price available",
+            "propertyId": str(property_id),
+        }
+        for property_id in range(1000, 1044)
+    ]
+    full_cards = [
+        {
+            "urls": [
+                "https://www.agoda.com/vi-vn/shared-city/vung-tau"
+                f"?propertyId={property_id}"
+            ],
+            "name": f"Demo Hotel {property_id}",
+            "text": f"Demo Hotel {property_id} Gia moi dem VND 500.000",
+        }
+        for property_id in range(1000, 1044)
+    ]
+    partial_snapshot = collect_listing_snapshot(
+        _CandidateCardsPage(partial_cards), '[data-selenium="hotel-item"]', 1
+    )
+    full_snapshot = collect_listing_snapshot(
+        _CandidateCardsPage(full_cards), '[data-selenium="hotel-item"]', 1
+    )
+
+    for ordered_snapshots in (
+        (partial_snapshot, full_snapshot),
+        (full_snapshot, partial_snapshot),
+    ):
+        records_by_key = {}
+        for snapshot in ordered_snapshots:
+            merge_records_into_results(records_by_key, snapshot.records)
+
+        records = list(records_by_key.values())
+        assert len(records) == 44
+        assert all(record["hotel_url"] for record in records)
+        assert all(record["price_value"] == "500000" for record in records)
+        assert all(record["collect_status"] == "ok" for record in records)
+        assert all(record["record_kind"] == "full_record" for record in records)
+        assert all("partial_debug" not in record for record in records)
 
 
 class _ImageSlidePage:

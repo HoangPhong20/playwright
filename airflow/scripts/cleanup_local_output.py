@@ -33,15 +33,19 @@ def _is_uploaded_complete_attempt(attempt_dir: Path) -> tuple[dict[str, Any], da
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    finished_at = _parse_timestamp(manifest.get("finished_at"))
+    if not isinstance(manifest, dict) or not isinstance(receipt, dict):
+        return None
+    uploaded_at = _parse_timestamp(receipt.get("uploaded_at"))
     if (
         manifest.get("status") != "complete"
-        or finished_at is None
+        or uploaded_at is None
+        or receipt.get("airflow_dag_id") != manifest.get("airflow_dag_id")
+        or receipt.get("airflow_run_id") != manifest.get("airflow_run_id")
         or receipt.get("batch_id") != manifest.get("batch_id")
         or receipt.get("airflow_try_number") != manifest.get("airflow_try_number")
     ):
         return None
-    return manifest, finished_at
+    return manifest, uploaded_at
 
 
 def _remove_empty_parents(attempt_dir: Path, output_root: Path) -> None:
@@ -89,8 +93,8 @@ def cleanup_old_attempts(
         result = _is_uploaded_complete_attempt(resolved)
         if result is None:
             continue
-        manifest, finished_at = result
-        if manifest.get("batch_id") == exclude_batch_id or finished_at >= cutoff:
+        manifest, uploaded_at = result
+        if manifest.get("batch_id") == exclude_batch_id or uploaded_at >= cutoff:
             continue
         shutil.rmtree(resolved)
         if debug_root is not None:

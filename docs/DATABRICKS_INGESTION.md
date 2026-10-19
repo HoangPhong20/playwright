@@ -112,6 +112,14 @@ DATABRICKS_JOB_TIMEOUT_SECONDS=3600
 committed. A future production deployment can replace it with OAuth service
 principal credentials without changing the batch layout or manifest contract.
 
+For Free Edition, Account Console and account-level APIs are unavailable, so
+custom OAuth app registration is not part of this project's setup. Workspace
+CLI OAuth login is a separate local diagnostic flow; it does not authenticate
+the Airflow container. The current upload and trigger scripts explicitly use
+the container's host and token and do not refresh OAuth credentials. Do not
+treat a short-lived OAuth access token as durable scheduled-run configuration.
+See [Free Edition and local authentication](../README.md#databricks-free-edition-và-xác-thực-local).
+
 The Databricks Job must define `manifest_path` as a job-level parameter. Airflow
 overrides that parameter for each run, while `project_root` remains the Job's
 static parameter.

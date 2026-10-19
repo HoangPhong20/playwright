@@ -1,5 +1,5 @@
 """Batch job planning helpers for Agoda crawls."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List
@@ -20,6 +20,7 @@ class CrawlJob:
 class CrawlJobResult:
     job: CrawlJob
     records: List[Dict]
+    pagination: Dict = field(default_factory=dict)
 
 
 def parse_destinations(destinations: str, fallback: str) -> List[str]:

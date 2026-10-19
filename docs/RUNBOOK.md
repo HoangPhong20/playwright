@@ -7,8 +7,8 @@ Chạy lệnh từ root repository:
 ```powershell
 cd D:\DE\databrick\playwright
 .\venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
-playwright install
+py -m pip install -r requirements-dev.txt
+py -m playwright install
 ```
 
 Mặc định `.env` chạy headless, outer workers là 2 và detail concurrency là 3.
@@ -30,11 +30,13 @@ Use `--total-detail-concurrency` only when intentionally overriding that cap.
 Lệnh này không crawl detail nên nhanh và phù hợp để kiểm tra selector/pagination:
 
 ```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id smoke_20260815_001 `
+$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
+$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
+py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
   --airflow-try-number 1 --output-dir data/airflow `
   --destinations "Vung Tau" `
-  --date 2026-08-15 `
-  --max-pages 2 --no-enrich-details
+  --date $checkIn `
+  --max-pages 1 --workers 1 --no-enrich-details
 ```
 
 ## Crawl có detail
@@ -42,28 +44,32 @@ python main.py --airflow-dag-id adhoc --airflow-run-id smoke_20260815_001 `
 Không thêm `--no-enrich-details` nếu muốn so sánh `detail-concurrency`:
 
 ```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id detail_20260815_001 `
+$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
+$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
+py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
   --airflow-try-number 1 --output-dir data/airflow `
   --destinations "Vung Tau" `
-  --date 2026-08-15 `
+  --date $checkIn `
   --max-pages 2
 ```
 
 ## Benchmark detail concurrency
 
-Giữ nguyên city/date/max-pages và dùng output directory khác nhau:
+Giữ nguyên city/date/max-pages và dùng run identity khác nhau:
 
 ```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id compare_detail_2_20260815 `
+$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
+$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
+py main.py --airflow-dag-id adhoc --airflow-run-id "${runId}_detail_2" `
   --airflow-try-number 1 --output-dir data/airflow `
   --destinations "Vung Tau" `
-  --date 2026-08-15 `
+  --date $checkIn `
   --max-pages 2 --detail-concurrency 2
 
-python main.py --airflow-dag-id adhoc --airflow-run-id compare_detail_3_20260815 `
+py main.py --airflow-dag-id adhoc --airflow-run-id "${runId}_detail_3" `
   --airflow-try-number 1 --output-dir data/airflow `
   --destinations "Vung Tau" `
-  --date 2026-08-15 `
+  --date $checkIn `
   --max-pages 2 --detail-concurrency 3
 ```
 
@@ -82,5 +88,5 @@ So sánh `seconds=...`, `detail_sum=...`, coverage và số record publishable. 
 ## Test
 
 ```powershell
-python -m pytest
+py -m pytest
 ```

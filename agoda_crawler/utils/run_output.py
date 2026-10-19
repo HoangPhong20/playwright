@@ -107,6 +107,7 @@ def print_verification_summary(
     elapsed_seconds: int,
     discarded_records: List[Dict] | None = None,
     minimum_optional_coverage: float = MIN_OPTIONAL_COVERAGE,
+    job_results: List[CrawlJobResult] | None = None,
 ) -> None:
     discarded_records = discarded_records or []
     detail_attempted = sum(1 for rec in records if rec.get("enrich_status") in {"attempted", "success", "failed"})
@@ -117,7 +118,16 @@ def print_verification_summary(
     missing_price = sum(1 for rec in records if not rec.get("price_value"))
     missing_rating = sum(1 for rec in records if not rec.get("rating_text"))
     records_with_url = sum(1 for rec in records if rec.get("hotel_url"))
-    pagination = next((rec.get("_pagination") for rec in records if rec.get("_pagination")), {}) or {}
+    if job_results is None:
+        pagination_summaries = list(
+            {
+                id(summary): summary
+                for rec in records
+                if (summary := rec.get("_pagination"))
+            }.values()
+        )
+    else:
+        pagination_summaries = [result.pagination for result in job_results]
     timing_summaries: Dict[tuple, Dict] = {}
     for rec in records:
         timing = rec.get("_timing") or {}
@@ -129,11 +139,28 @@ def print_verification_summary(
             timing.get("total_seconds", 0),
         )
         timing_summaries.setdefault(key, timing)
-    page_unique_record_counts = pagination.get("page_unique_record_counts") or {}
-    selected_targets = pagination.get("selected_scroll_targets") or []
-    max_visible_dom_cards = pagination.get("max_visible_dom_cards", 0)
-    pages_requested = pagination.get("pages_requested", 0)
-    pages_requested_label = pages_requested if pages_requested else "all"
+    pages_collected = sum(
+        int(summary.get("pages_collected", 0)) for summary in pagination_summaries
+    )
+    requested_pages = [
+        int(summary.get("pages_requested", 0)) for summary in pagination_summaries
+    ]
+    pages_requested_label = (
+        "all"
+        if not requested_pages or any(value == 0 for value in requested_pages)
+        else str(sum(requested_pages))
+    )
+    selected_targets = sorted(
+        {
+            target
+            for summary in pagination_summaries
+            for target in summary.get("selected_scroll_targets", [])
+        }
+    )
+    max_visible_dom_cards = max(
+        (summary.get("max_visible_dom_cards", 0) for summary in pagination_summaries),
+        default=0,
+    )
     price_present = sum(1 for rec in records if rec.get("price_value"))
     optional_status, optional_coverage = optional_coverage_status(records, minimum_optional_coverage)
     coverage_status = "warning" if discarded_records else "success"
@@ -164,14 +191,25 @@ def print_verification_summary(
             f"bottleneck={bottleneck}"
         )
     print(
-        f"- pages={pagination.get('pages_collected', 0)}/"
-        f"{pages_requested_label} duplicate={pagination.get('duplicate_pages', 0)}"
+        f"- pages={pages_collected}/{pages_requested_label} "
+        f"duplicate={sum(int(summary.get('duplicate_pages', 0)) for summary in pagination_summaries)} "
+        f"jobs={len(pagination_summaries)}"
     )
-    if page_unique_record_counts:
-        page_counts = ", ".join(
-            f"p{page}={count}" for page, count in sorted(page_unique_record_counts.items())
-        )
-        print(f"- page_records: {page_counts}")
+    if job_results is not None:
+        for result, summary in zip(job_results, pagination_summaries):
+            requested = int(summary.get("pages_requested", 0))
+            page_label = requested if requested else "all"
+            page_counts = summary.get("page_unique_record_counts") or {}
+            page_records = ", ".join(
+                f"p{page}={count}" for page, count in sorted(page_counts.items())
+            )
+            print(
+                f"- job_pages[{result.job.destination} {result.job.check_in}]: "
+                f"{summary.get('pages_collected', 0)}/{page_label} "
+                f"status={summary.get('status', 'failed')} "
+                f"stop={summary.get('stop_reason', 'crawl_error')}"
+                + (f" page_records={page_records}" if page_records else "")
+            )
     print(f"- scroll_rounds={scroll_rounds} target={','.join(selected_targets) if selected_targets else ''}")
     print(f"- visible_dom_max={max_visible_dom_cards}")
     print(f"- discarded_records={len(discarded_records)}")

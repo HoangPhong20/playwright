@@ -36,11 +36,13 @@ Không tạo alias cấu hình trùng nghĩa trừ khi có kế hoạch deprecat
 ## Xác minh tối thiểu
 
 ```powershell
-python -m pytest
-python main.py --airflow-dag-id adhoc --airflow-run-id smoke_after_change_001 `
+$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
+$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
+py -m pytest
+py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
   --airflow-try-number 1 --output-dir data/airflow `
   --destinations "Vung Tau" `
-  --date 2026-08-15 `
+  --date $checkIn `
   --max-pages 1 --workers 1 --no-enrich-details
 ```
 

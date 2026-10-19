@@ -439,7 +439,7 @@ def _is_activities_shell(page: Page) -> bool:
         html = page.content()
     except Exception:
         return False
-    return '"appName":"activities-web"' in html or "cdn-activities" in html
+    return re.search(r'"appName"\s*:\s*"activities-web"', html) is not None
 
 
 def _find_hotel_tab(page: Page, timeout_ms: int) -> Optional[Locator]:

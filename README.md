@@ -76,6 +76,31 @@ If `py --list-paths` shows no installed Python, install a supported CPython
 version first, then recreate `venv`. Do not reuse a virtual environment whose
 base interpreter no longer exists.
 
+## Databricks Free Edition và xác thực local
+
+Free Edition không có Account Console hoặc API cấp account, nên không áp dụng
+hướng dẫn tạo custom OAuth App tại `Settings > App connections` để lấy Client ID.
+Xem [giới hạn Free Edition](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations#administrative-limitations).
+
+Để kiểm tra truy cập workspace từ Windows bằng Databricks CLI, thay các giá trị
+placeholder bằng workspace URL và tên profile bạn chọn:
+
+```powershell
+databricks auth login --host "https://<workspace-host>" --profile "<profile-name>"
+databricks current-user me --profile "<profile-name>"
+```
+
+Luồng OAuth tích hợp của CLI không yêu cầu tự tạo custom OAuth Client ID.
+Đăng nhập thành công chưa chứng minh có quyền đọc Volume hoặc chạy Job; cần
+kiểm tra từng API cần dùng. Xem [OAuth cho CLI](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-u2m).
+
+Profile OAuth trên Windows không tự được chuyển vào Docker. Các script upload
+và trigger của repository hiện khởi tạo SDK bằng `DATABRICKS_HOST` và
+`DATABRICKS_TOKEN` từ môi trường container; chưa dùng profile OAuth local hoặc
+tự refresh token. Không chép OAuth access token ngắn hạn vào `.env` như một giải
+pháp chạy lịch lâu dài. Nếu API trả `Invalid access token`, cần xử lý thông tin
+xác thực trước khi đánh giá quyền truy cập hoặc tính tương thích Free Edition.
+
 ## 2. Cấu hình root `.env`
 
 Tạo hoặc cập nhật file `.env` tại root dự án. Không commit file này.
@@ -292,9 +317,11 @@ history để bảng tổng hợp luôn gồm cả dữ liệu cũ và batch m�
 Để debug ngoài Airflow, cần truyền run identity rõ ràng:
 
 ```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id manual_001 `
+$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
+$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
+py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
   --airflow-try-number 1 --output-dir data/airflow `
-  --destinations "Vung Tau" --date 2026-08-15 --max-pages 1 `
+  --destinations "Vung Tau" --date $checkIn --max-pages 1 `
   --workers 1 --no-enrich-details
 ```
 

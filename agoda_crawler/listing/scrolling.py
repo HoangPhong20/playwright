@@ -89,21 +89,36 @@ def scroll_dom_containers(page: Page) -> ScrollAdvance:
                     '[data-element-name="property-card"]',
                     'a[href*="/hotel/"]'
                 ].join(',');
-                const containers = Array.from(document.querySelectorAll('body *'))
-                    .map((element, index) => {
-                        const style = window.getComputedStyle(element);
-                        const overflowY = style.overflowY;
-                        const canScroll = element.scrollHeight > element.clientHeight + 100;
-                        const hasHotel = Boolean(element.querySelector(hotelSelector));
-                        const cardCount = hasHotel ? element.querySelectorAll(hotelSelector).length : 0;
-                        const range = element.scrollHeight - element.clientHeight;
-                        return { element, index, overflowY, canScroll, hasHotel, cardCount, range };
-                    })
-                    .filter((item) => (
-                        item.canScroll &&
-                        item.hasHotel &&
-                        ['auto', 'scroll', 'overlay'].includes(item.overflowY)
-                    ))
+                const hotelCards = Array.from(document.querySelectorAll(hotelSelector));
+                const containersByElement = new Map();
+                hotelCards.forEach((card) => {
+                    let ancestor = card.parentElement;
+                    let depth = 0;
+                    while (
+                        ancestor &&
+                        ancestor !== document.body &&
+                        ancestor !== document.documentElement &&
+                        depth < 12
+                    ) {
+                        const range = ancestor.scrollHeight - ancestor.clientHeight;
+                        if (range > 100) {
+                            const overflowY = window.getComputedStyle(ancestor).overflowY;
+                            if (['auto', 'scroll', 'overlay'].includes(overflowY)) {
+                                containersByElement.set(ancestor, range);
+                                break;
+                            }
+                        }
+                        ancestor = ancestor.parentElement;
+                        depth += 1;
+                    }
+                });
+                const containers = Array.from(containersByElement.entries())
+                    .map(([element, range], index) => ({
+                        element,
+                        index,
+                        cardCount: element.querySelectorAll(hotelSelector).length,
+                        range,
+                    }))
                     .sort((left, right) => {
                         if (right.cardCount !== left.cardCount) return right.cardCount - left.cardCount;
                         return right.range - left.range;
