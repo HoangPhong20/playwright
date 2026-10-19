@@ -10,6 +10,72 @@ Keep `main.py` thin. Put behavior in the package modules by concern:
 navigation, listing collection, extraction, enrichment, orchestration, and
 utilities.
 
+## Agent Skills Workflow
+
+Use OpenSpec to record requirements and change plans, and Superpowers to guide
+design, debugging, implementation, and review. Follow system and developer
+instructions first, then the user's instructions and these repository rules,
+then the applicable skill instructions.
+
+### Skill discovery and scope
+
+- Start with `superpowers:using-superpowers`. Read each applicable `SKILL.md`
+  before acting; announce the skills being used and their purpose.
+- Discover skills from the current session's catalog and configured skill
+  directories. Use the installed instructions rather than remembered commands
+  or machine-specific plugin cache paths.
+- Inspect `git status` and the relevant files before editing. Preserve existing
+  user changes and keep the work within the requested scope.
+- Check that this project has an initialized OpenSpec root before creating
+  change artifacts. A globally installed CLI does not initialize this repo.
+  If a required skill or project setup is missing, report the missing
+  prerequisite and follow the skill's fallback or setup guidance.
+- Scale the workflow to the task. Documentation-only edits use direct editing
+  and diff review. For product changes, follow the applicable design, planning,
+  implementation, and verification skills.
+
+### Choosing the workflow
+
+| Task | Required workflow |
+| --- | --- |
+| Unclear goal or competing approaches | Use `openspec-explore` to investigate and `superpowers:brainstorming` when designing new behavior. |
+| Feature or behavior change | Use `superpowers:brainstorming` for the appropriate design path; use `openspec-propose` when recording a change proposal. |
+| Architectural change or implementation plan | Use `superpowers:writing-plans` after the required design review. Record executable tasks in the OpenSpec change when it owns the work. |
+| Implementing an OpenSpec change | Use `openspec-apply-change` to track task completion and the applicable Superpowers execution skill to implement the plan. |
+| Bug, regression, or failing test | Use `superpowers:systematic-debugging` before proposing a fix; establish the cause and a reproducible failure. |
+| Production code change | Use `superpowers:test-driven-development`: observe the relevant test fail, make the smallest change, then verify it passes. |
+| Reviewing implementation | Use `superpowers:requesting-code-review`; use `superpowers:receiving-code-review` before acting on review feedback. |
+| Completion or success claim | Use `superpowers:verification-before-completion` and report the commands actually run and their results. |
+
+Load domain skills when the task calls for them: `agoda-pipeline-review` for
+crawler and pipeline issues, the appropriate Airflow skills for DAG work, and
+the appropriate Databricks skills for ingestion or platform work.
+
+### Coordinating OpenSpec and Superpowers
+
+- For an OpenSpec change, keep the requirements, design, and task checklist
+  under `openspec/changes/<change-name>/`. Read existing artifacts and progress
+  before continuing work.
+- Use the change's `design.md` and `tasks.md` as the project-specific locations
+  for Superpowers design and plan artifacts. Preserve the structure and detail
+  required by those skills; link supporting documents when needed.
+- Maintain one authoritative task checklist. Update it as work completes and
+  keep any execution ledger linked to that plan. Avoid independent copies in
+  `docs/superpowers/` that can drift from the OpenSpec change.
+- Follow the selected skills' review and approval gates. Reuse an existing
+  approval for the same artifact and scope; raise material scope changes with
+  the user before implementing them.
+- Choose inline execution or subagent execution according to the selected
+  skill, the user's instructions, and available tools. Preserve existing work
+  when an execution skill requires an isolated workspace.
+- If `openspec-verify-change` is available, use it to check implementation
+  against the change artifacts. It complements the project's runtime checks.
+  Archive through `openspec-archive-change` after verification and the required
+  workflow approvals.
+- Include changed behavior, verification evidence, and remaining gaps in the
+  handoff. For documentation-only edits, report the diff review; code changes
+  must also follow the Testing Guidance below.
+
 ## Project Structure
 
 - `main.py`: CLI argument parsing and handoff to orchestration.
