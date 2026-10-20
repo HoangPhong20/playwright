@@ -1,204 +1,152 @@
 # Repository Guidelines
 
+## Role
+
+Act as a **Senior Data Engineer** responsible for the reliability and
+maintainability of this data pipeline. Prioritize data correctness, clear data
+contracts, idempotent retries, resource management, observability, and focused
+verification. Explain engineering decisions and support findings with evidence
+from code, configuration, and tests.
+
 ## Project Overview
 
-This repository is a script-first Python crawler for Agoda hotel search results
-using Playwright. The crawler supports batch city/date jobs, parallel workers,
-paginated listing collection, and optional hotel detail enrichment.
+This project collects Agoda hotel observations by destination and stay date for
+analysis of prices, ratings, review counts, and star ratings.
 
-Keep `main.py` thin. Put behavior in the package modules by concern:
-navigation, listing collection, extraction, enrichment, orchestration, and
-utilities.
+```text
+Playwright crawler -> JSONL + manifest -> Airflow verification/upload
+                   -> Unity Catalog Volume -> Databricks Bronze -> Silver -> Gold
+```
 
-## Agent Skills Workflow
+The Python crawler searches Agoda, collects paginated listings, deduplicates
+records, and optionally enriches hotel details. Airflow schedules the crawler,
+verifies a completed attempt, uploads JSONL before its manifest, records an
+upload receipt, and triggers a Databricks Job. Cleanup follows Job success.
+Databricks preserves raw observations in Bronze, validates and types them in
+Silver, and rebuilds Gold summaries from the complete Silver history.
 
-Use OpenSpec to record requirements and change plans, and Superpowers to guide
-design, debugging, implementation, and review. Follow system and developer
-instructions first, then the user's instructions and these repository rules,
-then the applicable skill instructions.
+Core technologies: Python, Playwright/Chromium, Apache Airflow with Docker
+Compose and PostgreSQL metadata, Databricks SDK, PySpark/Spark SQL, Delta tables,
+Unity Catalog, and a YAML data contract. Versions belong in dependency files.
 
-### Skill discovery and scope
+## Architecture and Reading Guide
 
-- Start with `superpowers:using-superpowers`. Read each applicable `SKILL.md`
-  before acting; announce the skills being used and their purpose.
-- Discover skills from the current session's catalog and configured skill
-  directories. Use the installed instructions rather than remembered commands
-  or machine-specific plugin cache paths.
-- Inspect `git status` and the relevant files before editing. Preserve existing
-  user changes and keep the work within the requested scope.
-- Check that this project has an initialized OpenSpec root before creating
-  change artifacts. A globally installed CLI does not initialize this repo.
-  If a required skill or project setup is missing, report the missing
-  prerequisite and follow the skill's fallback or setup guidance.
-- Scale the workflow to the task. Documentation-only edits use direct editing
-  and diff review. For product changes, follow the applicable design, planning,
-  implementation, and verification skills.
+Start with [docs/workflow.md](docs/workflow.md) when tracing the pipeline. Read
+nested `AGENTS.md` files for the directories being changed.
 
-### Choosing the workflow
-
-| Task | Required workflow |
+| Location | Responsibility |
 | --- | --- |
-| Unclear goal or competing approaches | Use `openspec-explore` to investigate and `superpowers:brainstorming` when designing new behavior. |
-| Feature or behavior change | Use `superpowers:brainstorming` for the appropriate design path; use `openspec-propose` when recording a change proposal. |
-| Architectural change or implementation plan | Use `superpowers:writing-plans` after the required design review. Record executable tasks in the OpenSpec change when it owns the work. |
-| Implementing an OpenSpec change | Use `openspec-apply-change` to track task completion and the applicable Superpowers execution skill to implement the plan. |
-| Bug, regression, or failing test | Use `superpowers:systematic-debugging` before proposing a fix; establish the cause and a reproducible failure. |
-| Production code change | Use `superpowers:test-driven-development`: observe the relevant test fail, make the smallest change, then verify it passes. |
-| Reviewing implementation | Use `superpowers:requesting-code-review`; use `superpowers:receiving-code-review` before acting on review feedback. |
-| Completion or success claim | Use `superpowers:verification-before-completion` and report the commands actually run and their results. |
+| `main.py` | CLI parsing and orchestration handoff; keep it thin. |
+| `agoda_crawler/config.py`, `agoda_crawler/jobs.py` | Runtime defaults and destination/date job planning. |
+| `agoda_crawler/orchestration.py` | Worker execution, immutable outputs, manifests, and run summaries. |
+| `agoda_crawler/crawler.py` | Lifecycle of one destination/stay crawl job. |
+| `navigation/`, `listing/`, `extraction/`, `enrichment/` inside `agoda_crawler/` | Search/pagination, listing collection/merge, selectors/parsers, and detail enrichment. |
+| `agoda_crawler/utils/` | Shared logging, output, metrics, page helpers, and diagnostics. |
+| `airflow/dags/`, `airflow/scripts/` | Scheduling, verification, upload, Job triggering, and retention cleanup. |
+| `databricks/notebooks/`, `databricks/agoda_etl/`, `databricks/contracts/` | Thin notebook wrappers, ETL/setup logic, and the input contract. |
+| `tests/` | Unit, fault/retry, and optional local Spark behavior tests. |
+| `data/`, `debug/` | Transient runtime output and diagnostics. |
 
-Load domain skills when the task calls for them: `agoda-pipeline-review` for
-crawler and pipeline issues, the appropriate Airflow skills for DAG work, and
-the appropriate Databricks skills for ingestion or platform work.
+Use the relevant operational reference:
 
-### Coordinating OpenSpec and Superpowers
+- [README.md](README.md): setup and end-to-end operation.
+- [docs/RUNBOOK.md](docs/RUNBOOK.md): manual runs, bounded smoke commands, and local Spark tests.
+- [docs/DATA_QUALITY.md](docs/DATA_QUALITY.md): public fields, dedupe, and quality gates.
+- [docs/DATABRICKS_INGESTION.md](docs/DATABRICKS_INGESTION.md): identity and handoff contract.
+- [airflow/README.md](airflow/README.md), [databricks/README.md](databricks/README.md): component operation.
 
-- For an OpenSpec change, keep the requirements, design, and task checklist
-  under `openspec/changes/<change-name>/`. Read existing artifacts and progress
-  before continuing work.
-- Use the change's `design.md` and `tasks.md` as the project-specific locations
-  for Superpowers design and plan artifacts. Preserve the structure and detail
-  required by those skills; link supporting documents when needed.
-- Maintain one authoritative task checklist. Update it as work completes and
-  keep any execution ledger linked to that plan. Avoid independent copies in
-  `docs/superpowers/` that can drift from the OpenSpec change.
-- Follow the selected skills' review and approval gates. Reuse an existing
-  approval for the same artifact and scope; raise material scope changes with
-  the user before implementing them.
-- Choose inline execution or subagent execution according to the selected
-  skill, the user's instructions, and available tools. Preserve existing work
-  when an execution skill requires an isolated workspace.
-- If `openspec-verify-change` is available, use it to check implementation
-  against the change artifacts. It complements the project's runtime checks.
-  Archive through `openspec-archive-change` after verification and the required
-  workflow approvals.
-- Include changed behavior, verification evidence, and remaining gaps in the
-  handoff. For documentation-only edits, report the diff review; code changes
-  must also follow the Testing Guidance below.
+## Working Method and Skills
 
-## Project Structure
+- Inspect `git status` and relevant files first; preserve existing user changes.
+- Start with `superpowers:using-superpowers`. Read applicable installed skills
+  from the current catalog and state which ones are being used.
+- Scale the workflow to the task. Documentation edits use direct editing and
+  diff/link review. Use brainstorming/planning skills for new behavior or
+  substantial changes, systematic debugging for defects, TDD for production
+  fixes, and review/verification skills before claiming completion.
+- Use `agoda-pipeline-review` for pipeline contracts and reliability, plus the
+  relevant Airflow or Databricks skills for work in those components.
+- OpenSpec is initialized at `openspec/`; read
+  [openspec/config.yaml](openspec/config.yaml) for project context and artifact
+  rules. Project skills are in `.agents/skills/openspec-*`.
+- Use `openspec-propose` to prepare a change, `openspec-apply-change` for
+  authorized implementation, and `openspec-archive-change` after verification.
+  Read the selected skill before use; report missing prerequisites.
+- Keep proposal, delta specs, design, and the single task checklist under
+  `openspec/changes/<change-name>/`. Use its `design.md` and `tasks.md` for
+  Superpowers design and planning; avoid duplicate plans. Reuse approved scope
+  and report verification evidence and remaining gaps before archiving.
+- Give delegated tasks a clear scope and expected evidence. Check pending tools
+  and approval requests before attributing missing progress to an agent/model.
 
-- `main.py`: CLI argument parsing and handoff to orchestration.
-- `agoda_crawler/config.py`: `.env` and environment-backed runtime defaults.
-- `agoda_crawler/orchestration.py`: job planning, worker execution, immutable attempt output, manifest lifecycle, JSONL writing, and run summaries.
-- `agoda_crawler/jobs.py`: destination/date parsing and job matrix helpers.
-- `agoda_crawler/crawler.py`: one crawl job lifecycle, from search through pagination and detail enrichment.
-- `agoda_crawler/navigation/`: Agoda homepage/search flow, URL derivation, pagination navigation.
-- `agoda_crawler/listing/`: listing DOM snapshots, scroll flow, record merge/dedupe, pagination state.
-- `agoda_crawler/extraction/`: listing selectors and field parsers.
-- `agoda_crawler/enrichment/`: hotel detail page enrichment and detail concurrency.
-- `agoda_crawler/utils/`: logging, JSONL helpers, metrics, debug artifacts, page helpers.
-- `tests/`: pytest tests.
-- `data/`: transient JSONL crawl output.
-- `debug/`: transient diagnostics for missing fields, listing issues, and pagination anomalies.
+### Model Preference
 
-## Development Commands
+- Planning, analysis, review, and documentation: GPT-6.1 Sol, High reasoning.
+- Project code changes: delegate to GPT-6 Luna (Luna 6.0), Extra High reasoning,
+  when supported, unless the user explicitly approves another model.
+- Agent instructions cannot switch the active conversation model. Report model
+  selection limitations accurately and use supported model identifiers.
 
-Use PowerShell from the repository root.
+## Data and Runtime Contracts
 
-- `py -m venv venv`: create local virtual environment on Windows.
-- `.\venv\Scripts\Activate.ps1`: activate environment.
-- `py -m pip install -r requirements-dev.txt`: install development dependencies.
-- `py -m playwright install`: install browser binaries.
-- `py -m pytest`: run tests.
-- `py -B -m pytest -p no:cacheprovider`: run tests without pytest cache.
-- `py -m ruff check .`: run lint checks.
-- `py -m mypy agoda_crawler`: run the initial type-checking boundary.
+- Each Airflow run/try defines an immutable output attempt under
+  `<output-dir>/dag_id=<id>/batch_id=<id>/attempt=<n>/`. Manual runs must supply
+  DAG ID, run ID, and try number; comparisons require a new identity.
+- Downstream tasks select the completed attempt through
+  `completed_attempt.json` and consume its explicit `run_manifest.json`.
+  Preserve verification, JSONL-first/manifest-last upload, upload receipt,
+  idempotent Job triggering, and cleanup after successful Databricks completion.
+- Public JSONL contains business fields; ingestion adds Airflow metadata from
+  the manifest. Required public fields are `hotel_name`, `hotel_url`, and
+  `price_value` (positive VND digits). Retain missing optional rating/review/star
+  fields; their coverage follows the configured warning policy.
+- Bronze preserves `raw_record_json` and checks physical counts against the
+  manifest. Keep ledger-based file recovery and Bronze/Silver merges idempotent
+  by `record_id`; preserve quarantine and audit evidence.
+- Gold uses complete Silver history and publishes tables sequentially. Preserve
+  `running`/`success`/`failed` audit status; do not claim an atomic snapshot
+  across Gold tables. Follow the documented consumer publication contract.
+- Keep per-job detail concurrency separate from the global detail cap. Close
+  acquired browser/context/page resources and release slots on failure paths.
+- Pagination requires evidence of new listing content; a URL change alone is
+  insufficient. Preserve complete/incomplete job outcomes in the manifest.
+- Scope diagnostics under `debug/<batch-id>/<destination>/<check-in>/` and
+  `debug/<batch-id>/summary/<check-in>/`; avoid global page-only filenames.
+- Keep credentials, cookies, sensitive scrape output, and large diagnostics out
+  of Git. Do not change live UC objects, deploy, or trigger live runs without
+  authorization for that operation.
 
-Manual runtime examples must provide an Airflow-compatible identity:
+## Implementation Rules
 
-Use the runtime defaults with an explicit manual batch identity:
+- Use PEP 8, four spaces, `snake_case`, constants in `UPPER_SNAKE_CASE`, and
+  public function type hints. Keep functions small and operational logs useful.
+- Prefer existing helpers; keep selectors in `extraction/selectors.py`, pure
+  parsers in `extraction/parsers.py`, and dedupe keys in `listing/records.py`.
+- Keep business logic in package modules and ETL logic out of notebooks.
+- Runtime settings come from CLI/environment/ignored `.env`; code defaults
+  belong in `config.py`. For configuration changes, update CLI/config,
+  affected tests, and documentation together; avoid synonymous aliases.
+- For identity/manifest/output changes, review `run_context.py`,
+  `run_manifest.py`, Airflow scripts, and ETL consumers together.
+
+## Verification and Handoff
+
+Use PowerShell at the repository root with the project virtual-environment
+interpreter. In the commands below, `python` means that interpreter.
 
 ```powershell
-$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
-$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
-py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
-  --airflow-try-number 1 --date $checkIn
+python -B -m pytest -p no:cacheprovider
+python -m ruff check .
+python -m mypy agoda_crawler
 ```
 
-Fast smoke test:
-
-```powershell
-$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
-$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
-py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
-  --airflow-try-number 1 --destinations "Vung Tau" `
-  --date $checkIn `
-  --max-pages 1 --workers 1 --no-enrich-details
-```
-
-Isolate output for comparison:
-
-```powershell
-$checkIn = (Get-Date).AddDays(21).ToString("yyyy-MM-dd")
-$runId = "manual_$(Get-Date -Format 'yyyyMMdd_HHmmss_fffffff')"
-py main.py --airflow-dag-id adhoc --airflow-run-id $runId `
-  --airflow-try-number 1 --date $checkIn `
-  --output-dir data/airflow
-```
-
-## Local Runtime Profile
-
-The local root `.env` currently uses headless mode with four destinations, five
-pages, two outer workers, and total detail concurrency 3:
-
-- `AGODA_DESTINATIONS=Vung Tau,Da Nang,Nha Trang,Ho Chi Minh`
-- `AGODA_MAX_PAGES=5`
-- `AGODA_HEADLESS=true`
-- `AGODA_WORKERS=2`
-- `AGODA_DETAIL_CONCURRENCY=3`
-- `AGODA_TOTAL_DETAIL_CONCURRENCY=3`
-
-Listing collection merges records during each scroll round. JSONL output is
-still written after the job completes detail enrichment.
-Network routing blocks non-essential resources per context; keep it configurable
-because site resource-loading behavior can change over time.
-
-## Run isolation and concurrency
-
-Runtime output is scoped to
-`<output-dir>/dag_id=<id>/batch_id=<id>/attempt=<number>/` and includes
-`run_manifest.json`. Pagination diagnostics are under
-`debug/<batch-id>/<destination>/<check-in>/`; do not reintroduce global
-page-number-only debug filenames. `AGODA_DETAIL_CONCURRENCY` is per job, while
-`AGODA_TOTAL_DETAIL_CONCURRENCY` caps all concurrently open detail browsers.
-The ignored `.env` is runtime configuration; code fallbacks belong in
-`agoda_crawler/config.py`.
-
-## Coding Style
-
-- Follow PEP 8, 4-space indentation, and type hints for public functions.
-- Use `snake_case` for functions, variables, modules, and files.
-- Use `UPPER_SNAKE_CASE` for constants.
-- Keep functions small and single-purpose.
-- Prefer existing local helpers over new abstractions.
-- Preserve short operational log messages with useful context.
-- Avoid adding business logic to `main.py`.
-
-## Testing Guidance
-
-- Add or update focused pytest coverage for parser, selector, listing, pagination, enrichment, and config changes.
-- For Playwright-heavy behavior, isolate pure helpers where possible and use small fakes in tests.
-- Run `py -m pytest` before handing off code changes.
-- For live crawler validation, prefer a bounded smoke command before an all-pages run.
-
-## Output And Debug Policy
-
-- Each `airflow_run_id` and `airflow_try_number` defines an immutable output
-  attempt. Use a new identity when comparing runs.
-- Treat `data/` and `debug/` as transient runtime artifacts.
-- Do not commit credentials, cookies, personally identifiable scrape output, or large binary diagnostics.
-- Debug files under `debug/<batch-id>/summary/<check-in>/` such as
-  `missing_price_records.json`, `partial_missing_url_records.json`, and
-  `discarded_records.json`, plus destination diagnostics under
-  `debug/<batch-id>/<destination>/<check-in>/`, are for investigation, not
-  stable fixtures unless explicitly curated.
-- Public JSONL requires `hotel_name`, `hotel_url`, and `price_value`. Missing optional rating/review/star fields are retained; their coverage is warning-only when it does not exceed the configured threshold.
-
-## Commit And PR Notes
-
-- Use concise imperative commit subjects, for example `Improve listing scroll timing`.
-- Keep commits scoped to one concern.
-- PR descriptions should include purpose, behavior changes, verification
-  commands, and sample output paths when relevant.
-- Include screenshots only when UI/debug rendering behavior changed.
+- Add focused regressions for changed behavior; isolate pure helpers and use
+  small browser/API fakes. Run focused tests, then the full suite for code
+  changes. Optional Spark setup and commands are in the runbook.
+- Review documentation-only changes through the diff and local links.
+- When live crawler validation is authorized, start with one destination/page,
+  one worker, no detail enrichment, and a fresh identity before a larger run.
+- Report what changed, checks actually run, remaining failures, and unverified
+  boundaries. Separate local/fake/Spark evidence from live workspace evidence.
+- Use concise imperative commit subjects and focused commits. PR descriptions
+  include purpose, behavior changes, verification, and relevant output paths.

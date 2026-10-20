@@ -16,7 +16,14 @@ from agoda_crawler.config import (
     FIELD_RETRY_TIMEOUT,
 )
 from agoda_crawler.extraction import extract_detail_fields
-from agoda_crawler.utils.logging import current_log_prefix, log, log_ignored_error, log_prefix
+from agoda_crawler.utils import merge_missing_fields
+from agoda_crawler.utils.logging import (
+    current_log_prefix,
+    exception_message,
+    log,
+    log_ignored_error,
+    log_prefix,
+)
 from agoda_crawler.utils.page_helpers import handle_cookie_popup
 from agoda_crawler.utils.resource_blocking import apply_resource_blocking
 from agoda_crawler.extraction.selectors import FIELD_SELECTORS
@@ -102,7 +109,7 @@ def enrich_records_from_details(
                 field_retry_count=field_retry_count,
             )
         finally:
-            if acquired_global_slot:
+            if acquired_global_slot and detail_worker_semaphore is not None:
                 detail_worker_semaphore.release()
         return
 
@@ -294,11 +301,14 @@ def enrich_detail_record_queue(
                 detail_worker_semaphore.acquire()
                 acquired_global_slot = True
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=headless)
-                context = browser.new_context(**browser_context_options(locale))
-                apply_resource_blocking(context)
-                detail_page = context.new_page()
+                browser = None
+                context = None
+                detail_page = None
                 try:
+                    browser = p.chromium.launch(headless=headless)
+                    context = browser.new_context(**browser_context_options(locale))
+                    apply_resource_blocking(context)
+                    detail_page = context.new_page()
                     record: Optional[Dict] = first_record
                     while record is not None:
                         with progress_lock:
@@ -326,19 +336,22 @@ def enrich_detail_record_queue(
                             record = None
                 finally:
                     try:
-                        detail_page.close()
+                        if detail_page is not None:
+                            detail_page.close()
                     except Exception as exc:
                         log_ignored_error("Detail page close failed", exc)
                     try:
-                        context.close()
+                        if context is not None:
+                            context.close()
                     except Exception as exc:
                         log_ignored_error("Detail context close failed", exc)
                     try:
-                        browser.close()
+                        if browser is not None:
+                            browser.close()
                     except Exception as exc:
                         log_ignored_error("Detail browser close failed", exc)
         finally:
-            if acquired_global_slot:
+            if acquired_global_slot and detail_worker_semaphore is not None:
                 detail_worker_semaphore.release()
 
 
@@ -432,7 +445,7 @@ def enrich_one_record_on_page(
         record["_detail_retry_count"] = retry_count
         record["_detail_extract_seconds"] = elapsed_seconds(extract_started_at)
     except Exception as exc:
-        error_text = str(exc).splitlines()[0]
+        error_text = exception_message(exc)
         record["enrich_status"] = "failed"
         record["enrich_error"] = error_text
         record["_detail_total_seconds"] = elapsed_seconds(started_at)
@@ -527,15 +540,6 @@ def detail_enrichment_sort_key(
     hotel_name = (record.get("hotel_name") or "").strip().lower()
     hotel_url = (record.get("hotel_url") or "").strip().lower()
     return (-critical_missing, -missing_count, hotel_name, hotel_url)
-
-
-def merge_missing_fields(record: Dict, detail_fields: Dict) -> bool:
-    changed = False
-    for field, value in detail_fields.items():
-        if value and not record.get(field):
-            record[field] = value
-            changed = True
-    return changed
 
 
 def with_stay_params(

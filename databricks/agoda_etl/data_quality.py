@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 
 from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.types import ArrayType, StringType, StructField, StructType
 
 from . import config, schemas
 
@@ -15,27 +16,45 @@ def _non_blank(name: str) -> Column:
     return F.col(name).isNotNull() & (F.length(F.trim(F.col(name))) > 0)
 
 
+def _try_cast(expression: str, data_type: str) -> Column:
+    """Cast user data without aborting the batch under ANSI mode."""
+    return F.expr(f"try_cast({expression} AS {data_type})")
+
+
+def _star_rating_expression(name: str) -> str:
+    return (
+        f"regexp_replace(regexp_extract(`{name}`, "
+        "'(-?[0-9]+([.,][0-9]+)?)', 1), ',', '.')"
+    )
+
+
 def _format_failure(name: str, format_name: str) -> Column:
     """Return a null-or-reason expression for one YAML-declared format."""
-    digits = F.regexp_replace(F.col(name), "[^0-9]", "")
-    decimal_text = F.regexp_replace(F.col(name), ",", ".")
     if format_name == "uri":
         invalid = ~F.col(name).rlike(r"^https?://")
     elif format_name == "positive_price":
-        invalid = (digits == "") | (digits.cast("decimal(18,0)") <= 0)
+        value = _try_cast(f"`{name}`", "DECIMAL(18,0)")
+        invalid = ~F.col(name).rlike(r"^[0-9]+$") | value.isNull() | (value <= 0)
     elif format_name == "timestamp":
-        invalid = F.to_timestamp(name).isNull()
+        invalid = _try_cast(f"`{name}`", "TIMESTAMP").isNull()
     elif format_name == "date":
-        invalid = F.to_date(name).isNull()
+        invalid = _try_cast(f"`{name}`", "DATE").isNull()
     elif format_name == "rating_0_10":
-        value = decimal_text.cast("decimal(3,1)")
+        value = _try_cast(f"replace(`{name}`, ',', '.')", "DECIMAL(3,1)")
         invalid = value.isNull() | (value < 0) | (value > 10)
     elif format_name == "non_negative_integer":
-        value = digits.cast("bigint")
-        invalid = (digits == "") | value.isNull() | (value < 0)
+        digits = F.regexp_replace(F.col(name), "[^0-9]", "")
+        value = _try_cast(f"regexp_replace(`{name}`, '[^0-9]', '')", "BIGINT")
+        invalid = (
+            (digits == "")
+            | value.isNull()
+            | (value < 0)
+            | F.col(name).rlike(r"-\s*[0-9]")
+        )
     elif format_name == "star_rating_0_5":
-        text = F.regexp_replace(F.regexp_extract(name, r"(\d+(?:[.,]\d+)?)", 1), ",", ".")
-        value = text.cast("decimal(2,1)")
+        text_expression = _star_rating_expression(name)
+        text = F.expr(text_expression)
+        value = _try_cast(text_expression, "DECIMAL(2,1)")
         invalid = (text == "") | value.isNull() | (value < 0) | (value > 5)
     else:  # Guarded by contract.load_contract; retained for direct unit-test safety.
         raise ValueError(f"Unsupported contract format: {format_name}")
@@ -53,11 +72,13 @@ def _semantic_failure_rules() -> list[Column]:
             failures.append(_format_failure(name, format_name))
     for rule in config.CONTRACT.get("cross_field_rules", []):
         if rule == "check_out_after_check_in":
+            check_in_date = _try_cast("`check_in`", "DATE")
+            check_out_date = _try_cast("`check_out`", "DATE")
             failures.append(
                 F.when(
-                    F.to_date("check_in").isNotNull()
-                    & F.to_date("check_out").isNotNull()
-                    & (F.to_date("check_out") <= F.to_date("check_in")),
+                    check_in_date.isNotNull()
+                    & check_out_date.isNotNull()
+                    & (check_out_date <= check_in_date),
                     F.lit("check_out_not_after_check_in"),
                 )
             )
@@ -76,22 +97,23 @@ def _with_failure_rules(frame: DataFrame) -> DataFrame:
 
 def _default_invalid_optional_metrics(frame: DataFrame) -> DataFrame:
     """Replace malformed optional metrics with neutral values before validation."""
-    rating_text = F.regexp_replace(F.col("rating_text"), ",", ".")
-    rating_value = rating_text.cast("decimal(3,1)")
+    rating_value = _try_cast("replace(`rating_text`, ',', '.')", "DECIMAL(3,1)")
     invalid_rating = _non_blank("rating_text") & (
         rating_value.isNull() | (rating_value < 0) | (rating_value > 10)
     )
 
     review_digits = F.regexp_replace(F.col("review_count_text"), "[^0-9]", "")
-    review_value = review_digits.cast("bigint")
+    review_value = _try_cast("regexp_replace(`review_count_text`, '[^0-9]', '')", "BIGINT")
     invalid_review_count = _non_blank("review_count_text") & (
-        (review_digits == "") | review_value.isNull() | (review_value < 0)
+        (review_digits == "")
+        | review_value.isNull()
+        | (review_value < 0)
+        | F.col("review_count_text").rlike(r"-\s*[0-9]")
     )
 
-    star_text = F.regexp_replace(
-        F.regexp_extract("star_rating_text", r"(\d+(?:[.,]\d+)?)", 1), ",", "."
-    )
-    star_value = star_text.cast("decimal(2,1)")
+    star_text_expression = _star_rating_expression("star_rating_text")
+    star_text = F.expr(star_text_expression)
+    star_value = _try_cast(star_text_expression, "DECIMAL(2,1)")
     invalid_star_rating = _non_blank("star_rating_text") & (
         (star_text == "") | star_value.isNull() | (star_value < 0) | (star_value > 5)
     )
@@ -121,11 +143,45 @@ def read_raw_records(
     Unknown fields and scalar representation changes are accepted. Only a line
     that is not a JSON object is quarantined at this boundary.
     """
+    corrupt_column = f"_agoda_corrupt_{uuid.uuid4().hex}"
+    end_marker = uuid.uuid4().hex
+    record_schema = StructType(
+        [
+            *schemas.CRAWLER_OUTPUT_SCHEMA.fields,
+            StructField(corrupt_column, StringType(), True),
+            StructField("_agoda_end_marker", StringType(), True),
+        ]
+    )
+    parse_schema = ArrayType(record_schema, containsNull=True)
     lines = spark.read.text(file_path).withColumnRenamed("value", "raw_record_json")
     parsed = (
         lines
-        .withColumn("record", F.from_json("raw_record_json", schemas.CRAWLER_OUTPUT_SCHEMA))
-        .withColumn("is_json_object", F.col("record").isNotNull())
+        .withColumn(
+            "parsed_records",
+            F.from_json(
+                F.concat(
+                    F.lit("["),
+                    F.col("raw_record_json"),
+                    F.lit(f',{{"_agoda_end_marker":"{end_marker}"}}]'),
+                ),
+                parse_schema,
+                {"mode": "PERMISSIVE", "columnNameOfCorruptRecord": corrupt_column},
+            ),
+        )
+        .withColumn("record", F.get(F.col("parsed_records"), 0))
+        .withColumn("sentinel", F.get(F.col("parsed_records"), 1))
+        .withColumn(
+            "is_json_object",
+            F.coalesce(
+                (F.size("parsed_records") == 2)
+                & F.col("record").isNotNull()
+                & (F.col("sentinel._agoda_end_marker") == F.lit(end_marker))
+                & F.col(f"record.{corrupt_column}").isNull()
+                & F.col(f"sentinel.{corrupt_column}").isNull()
+                & F.trim(F.col("raw_record_json")).rlike(r"^\{"),
+                F.lit(False),
+            ),
+        )
     )
     base = (
         parsed.select(

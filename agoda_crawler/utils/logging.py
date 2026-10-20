@@ -29,8 +29,12 @@ def log(message: str = "") -> None:
         print(line, flush=True)
 
 
+def exception_message(exc: Exception) -> str:
+    lines = str(exc).splitlines()
+    message = lines[0].strip() if lines else ""
+    return message or type(exc).__name__
+
+
 def log_ignored_error(context: str, exc: Exception) -> None:
-    error_text = str(exc).splitlines()[0].strip()
-    if not error_text:
-        error_text = type(exc).__name__
+    error_text = exception_message(exc)
     log(f"{context}: ignored {type(exc).__name__}: {error_text}")

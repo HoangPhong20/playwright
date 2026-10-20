@@ -59,31 +59,12 @@ def test_validate_manifest_accepts_expected_batch_and_output(tmp_path):
     assert result["publishable_records"] == 1
 
 
-def _complete_job_outcome() -> dict:
-    return {
-        "destination": "Vung Tau",
-        "check_in": "2026-08-15",
-        "check_out": "2026-08-16",
-        "pages_requested": 5,
-        "pages_collected": 1,
-        "status": "complete",
-        "stop_reason": "end_of_results",
-        "page_statuses": {"1": "collected"},
-    }
-
-
-def _new_manifest_jobs() -> dict:
-    return {
-        "destinations": ["Vung Tau"],
-        "planned_stays": [
-            {"check_in": "2026-08-15", "check_out": "2026-08-16"}
-        ],
-        "jobs": [_complete_job_outcome()],
-    }
-
-
-def test_validate_manifest_accepts_explicit_end_before_page_upper_bound(tmp_path):
-    manifest_path = write_manifest(tmp_path, **_new_manifest_jobs())
+def test_validate_manifest_accepts_explicit_end_before_page_upper_bound(
+    tmp_path, representative_job_manifest_fields
+):
+    manifest_path = write_manifest(
+        tmp_path, **representative_job_manifest_fields
+    )
 
     result = validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
 
@@ -98,18 +79,24 @@ def test_validate_manifest_accepts_explicit_end_before_page_upper_bound(tmp_path
     ],
 )
 def test_validate_manifest_rejects_incomplete_or_conflicting_job_outcomes(
-    tmp_path, mutation, message
+    tmp_path, representative_job_manifest_fields, mutation, message
 ):
-    job = _complete_job_outcome()
+    job = dict(representative_job_manifest_fields["jobs"][0])
     mutation(job)
-    manifest_path = write_manifest(tmp_path, **{**_new_manifest_jobs(), "jobs": [job]})
+    manifest_data = {
+        **representative_job_manifest_fields,
+        "jobs": [job],
+    }
+    manifest_path = write_manifest(tmp_path, **manifest_data)
 
     with pytest.raises(ValueError, match=message):
         validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
 
 
-def test_validate_manifest_rejects_missing_planned_job_outcome(tmp_path):
-    manifest_data = _new_manifest_jobs()
+def test_validate_manifest_rejects_missing_planned_job_outcome(
+    tmp_path, representative_job_manifest_fields
+):
+    manifest_data = representative_job_manifest_fields
     manifest_data["destinations"].append("Da Nang")
     manifest_path = write_manifest(tmp_path, **manifest_data)
 
@@ -117,15 +104,75 @@ def test_validate_manifest_rejects_missing_planned_job_outcome(tmp_path):
         validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
 
 
-def test_validate_manifest_rejects_inconsistent_collected_page_statuses(tmp_path):
-    job = _complete_job_outcome()
+def test_validate_manifest_rejects_inconsistent_collected_page_statuses(
+    tmp_path, representative_job_manifest_fields
+):
+    job = dict(representative_job_manifest_fields["jobs"][0])
     job["pages_collected"] = 2
     manifest_path = write_manifest(
         tmp_path,
-        **{**_new_manifest_jobs(), "jobs": [job]},
+        **{**representative_job_manifest_fields, "jobs": [job]},
     )
 
     with pytest.raises(ValueError, match="page statuses"):
+        validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
+
+
+def test_validate_manifest_rejects_duplicate_job_outcomes(
+    tmp_path, representative_job_manifest_fields
+):
+    job = representative_job_manifest_fields["jobs"][0]
+    manifest_path = write_manifest(
+        tmp_path,
+        **{
+            **representative_job_manifest_fields,
+            "jobs": [job, dict(job)],
+        },
+    )
+
+    with pytest.raises(ValueError, match="do not match planned jobs"):
+        validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
+
+
+@pytest.mark.parametrize(
+    "job_change, message",
+    [
+        (lambda job: job.update(destination=42), "invalid job identity"),
+        (lambda job: job.update(status="failed"), "status"),
+        (
+            lambda job: job.update(
+                pages_requested=1,
+                pages_collected=1,
+                stop_reason="end_of_results",
+            ),
+            "conflicting stop reason",
+        ),
+        (
+            lambda job: job.update(
+                page_statuses={"1": "collected", "2": "collected"}
+            ),
+            "page statuses",
+        ),
+    ],
+)
+def test_validate_manifest_rejects_invalid_job_outcomes(
+    tmp_path, representative_job_manifest_fields, job_change, message
+):
+    job = dict(representative_job_manifest_fields["jobs"][0])
+    job_change(job)
+    manifest_path = write_manifest(
+        tmp_path,
+        **{**representative_job_manifest_fields, "jobs": [job]},
+    )
+
+    with pytest.raises(ValueError, match=message):
+        validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
+
+
+def test_validate_manifest_rejects_boolean_try_number(tmp_path):
+    manifest_path = write_manifest(tmp_path, airflow_try_number=True)
+
+    with pytest.raises(ValueError, match="airflow_try_number"):
         validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
 
 
@@ -163,4 +210,23 @@ def test_validate_manifest_rejects_missing_publishable_records(tmp_path):
     )
 
     with pytest.raises(ValueError, match="without publishable records"):
+        validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)
+
+
+@pytest.mark.parametrize("boolean_count", [True, False])
+def test_validate_manifest_rejects_boolean_publishable_counts(
+    tmp_path, boolean_count
+):
+    output_path = (
+        RUN_CONTEXT.output_directory(tmp_path) / "agoda_hotels_2026-08-15.jsonl"
+    )
+    manifest_path = write_manifest(
+        tmp_path,
+        stays=[
+            {"publishable_records": boolean_count, "output_path": str(output_path)},
+            {"publishable_records": 1, "output_path": str(output_path)},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="invalid publishable record count"):
         validate_latest_run.validate_manifest(manifest_path, RUN_CONTEXT)

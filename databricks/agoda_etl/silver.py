@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import DecimalType
 
 from . import audit, config, data_quality, runtime
 
@@ -13,22 +12,26 @@ def transform_bronze_to_silver(bronze_df: DataFrame) -> DataFrame:
     """Type crawler fields and expose the business check-in date."""
     return (
         bronze_df
-        .withColumn("check_in_date", F.to_date("check_in"))
-        .withColumn("price_amount", F.when(F.regexp_replace("price_value", "[^0-9]", "") != "", F.regexp_replace("price_value", "[^0-9]", "")).cast(DecimalType(18, 0)))
-        .withColumn("rating", F.when(F.regexp_replace("rating_text", ",", ".") != "", F.regexp_replace("rating_text", ",", ".")).cast(DecimalType(3, 1)))
-        .withColumn("review_count", F.when(F.regexp_replace("review_count_text", "[^0-9]", "") != "", F.regexp_replace("review_count_text", "[^0-9]", "")).cast("bigint"))
+        .withColumn("check_in_date", F.expr("try_cast(`check_in` AS DATE)"))
+        .withColumn("price_amount", F.expr("try_cast(`price_value` AS DECIMAL(18,0))"))
+        .withColumn(
+            "rating",
+            F.expr("try_cast(replace(`rating_text`, ',', '.') AS DECIMAL(3,1))"),
+        )
+        .withColumn(
+            "review_count",
+            F.expr(
+                "try_cast(regexp_replace(`review_count_text`, '[^0-9]', '') AS BIGINT)"
+            ),
+        )
         .withColumn(
             "star_rating",
-            F.when(
-                F.regexp_replace(
-                    F.regexp_extract("star_rating_text", r"(\d+(?:[.,]\d+)?)", 1), ",", "."
-                ) != "",
-                F.regexp_replace(
-                    F.regexp_extract("star_rating_text", r"(\d+(?:[.,]\d+)?)", 1), ",", "."
-                )
-            ).cast(DecimalType(2, 1)),
+            F.expr(
+                "try_cast(regexp_replace(regexp_extract(`star_rating_text`, "
+                "'(-?[0-9]+([.,][0-9]+)?)', 1), ',', '.') AS DECIMAL(2,1))"
+            ),
         )
-        .withColumn("crawled_at", F.to_timestamp("crawled_at"))
+        .withColumn("crawled_at", F.expr("try_cast(`crawled_at` AS TIMESTAMP)"))
         .withColumn("bronze_ingested_at", F.col("ingested_at"))
         .withColumn("transformed_at", F.current_timestamp())
         .select(

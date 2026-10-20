@@ -50,8 +50,11 @@ thành công và ghi cảnh báo trong summary.
 `price_value` is a positive integer amount in VND serialized as a string. Search
 and detail URLs request `currencyCode=VND`; the parser rejects foreign currency,
 negative/accounting values, zero, and decimal or ambiguously grouped amounts.
-Periods, commas, and spaces are accepted as VND thousands separators when every
-group after the first contains three digits.
+The UI parser accepts periods, commas, and spaces as VND thousands separators
+when every group after the first contains three digits, then emits digits only
+in public JSONL. Silver requires a positive digit-only value that fits
+`decimal(18,0)`; it rejects signs, separators, currency text and overflow
+instead of stripping them into another amount.
 
 ## Coverage optional
 
@@ -92,6 +95,15 @@ Use these Unity Catalog tables to investigate a run:
 agoda.raw.agoda_hotel_quarantine
 agoda.raw.agoda_pipeline_audit
 ```
+
+## Gold publication status
+
+Gold refresh overwrites four tables sequentially. Its existing audit row moves
+through `running` and then `success` or `failed`; a crash may leave `running`.
+Partial failure can leave mixed table versions. Consumers must wait for the
+relevant Job and Gold audit to succeed and avoid reading during another
+refresh. An older successful audit is insufficient during a newer failed or
+running refresh. See the [publication contract](../databricks/README.md#gold-publication).
 
 ## Dedupe
 

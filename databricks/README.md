@@ -68,13 +68,14 @@ the cross-field check-out-after-check-in rule. Invalid rows remain in Bronze and
 are written to quarantine with `quarantine_layer = silver`; valid rows continue
 to Silver. Silver fails after quarantine only when invalid records exceed 10% of
 input or 200 records. `agoda.raw.agoda_pipeline_audit` records Bronze, Silver,
-and Gold counts and terminal status for every batch.
+and Gold counts and status for every batch. Gold records `running` before
+publication, then `success` or `failed`.
 
 Malformed non-blank values for the optional `rating_text`, `review_count_text`,
 and `star_rating_text` fields are normalized to zero before Silver validation;
 missing optional values remain null.
 
-Install `PyYAML==6.0.2` on the Databricks cluster or attach it as a job library
+Install `PyYAML==6.0.3` on the Databricks cluster or attach it as a job library
 before running the updated notebooks.
 
 JSONL chỉ chứa dữ liệu crawl nghiệp vụ. `batch_id` và các metadata Airflow chỉ
@@ -108,8 +109,31 @@ ALTER TABLE agoda.silver.agoda_hotels_history DROP COLUMN record_hash;
 ```
 
 Bronze và Silver idempotent theo `record_id`. Gold đọc toàn bộ Silver history
-và ghi lại bốn bảng tổng hợp, nên các ngày cũ và dữ liệu batch mới luôn nhất
-quán.
+và ghi lại bốn bảng tổng hợp, gồm cả ngày cũ và batch mới.
+
+### Gold publication
+
+The four Gold tables are overwritten sequentially. Each table write is
+independent; the refresh is not one atomic snapshot across tables. Failure
+after a write can leave a mixture of old and new tables. Retry rebuilds all
+four tables from complete Silver history.
+
+Gold writes `running` to the existing `agoda.raw.agoda_pipeline_audit` row
+before publication and writes `success` only after all four writes finish.
+Exceptions record `failed`; a process crash can leave `running`. The existing
+`completed_at` field is updated with each audit write, so a timestamp alone
+does not establish successful publication.
+
+Consumers must wait for the relevant Databricks Job to succeed and its Gold
+audit row to have `status = success`. An older batch's success row does not
+make the tables safe while a newer refresh is running or failed. Do not read
+across a refresh; coordinate reads and refreshes when a stable snapshot is
+required. The Airflow DAG uses `max_active_runs=1`; overlapping manual Job
+runs and concurrent-reader isolation are not enforced by this audit status.
+
+Local verification uses Spark transformations and stateful retry/fault tests;
+see [test setup](../docs/RUNBOOK.md#optional-local-databricks-etl-tests).
+These checks do not validate live Delta transactions or Unity Catalog access.
 
 ## Quyền cần có
 

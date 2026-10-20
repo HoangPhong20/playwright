@@ -51,6 +51,13 @@ def validate_manifest(manifest_path: Path, run_context: RunContext) -> dict[str,
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("status") != "complete":
         raise ValueError(f"Run status is {manifest.get('status')!r}, expected 'complete'")
+    airflow_try_number = manifest.get("airflow_try_number")
+    if (
+        not isinstance(airflow_try_number, int)
+        or isinstance(airflow_try_number, bool)
+        or airflow_try_number < 1
+    ):
+        raise ValueError("Manifest airflow_try_number must be a positive integer")
     expected_metadata = run_context.record_metadata()
     for field in (
         "airflow_dag_id",
@@ -67,6 +74,11 @@ def validate_manifest(manifest_path: Path, run_context: RunContext) -> dict[str,
     stays = manifest.get("stays")
     if not isinstance(stays, list) or not stays:
         raise ValueError("Run manifest has no completed stays")
+    if any(
+        isinstance(stay, dict) and isinstance(stay.get("publishable_records"), bool)
+        for stay in stays
+    ):
+        raise ValueError("Run manifest has an invalid publishable record count")
 
     if "jobs" in manifest:
         jobs = manifest["jobs"]

@@ -13,38 +13,9 @@ Airflow crawl
 
 ## Project flow
 
-```mermaid
-flowchart TD
-    A[Agoda website] --> B[Playwright crawler]
-    B --> C[JSONL output<br/>run_manifest.json]
-
-    subgraph Docker[Docker Compose]
-        D[Apache Airflow]
-        D1[crawl_agoda]
-        D2[verify_output]
-        D3[upload_to_uc_volume]
-        D4[trigger_databricks_job]
-        D5[cleanup_local_output]
-        D --> D1 --> D2 --> D3 --> D4 --> D5
-    end
-
-    C --> D1
-    D3 --> E[Unity Catalog Volume<br/>/Volumes/agoda/raw/crawler]
-    D4 --> F[Databricks Job]
-    E --> F
-
-    subgraph Databricks[Databricks / Unity Catalog]
-        F --> G[Bronze<br/>Raw records + ingestion ledger]
-        G --> H[Silver<br/>Typed hotel history]
-        H --> I[Gold<br/>Analytics tables]
-    end
-
-    I --> J[Dashboard / analysis]
-```
-
-Each Airflow run creates a manifest that identifies its JSONL files. Airflow passes
-the uploaded `manifest_path` to Databricks, so Bronze, Silver, and Gold process the
-same batch deterministically.
+Xem [luồng hoạt động và công nghệ](docs/workflow.md) để đọc sơ đồ pipeline,
+các bước crawler, Airflow, Bronze/Silver/Gold và cách xử lý retry. Airflow bàn
+giao đúng batch bằng `manifest_path`; Gold tổng hợp toàn bộ lịch sử Silver.
 
 ## 1. Điều kiện cần
 
@@ -164,7 +135,7 @@ project_root=/Workspace/Users/<your-email>/databricks
 Kết quả mong đợi:
 
 ```text
-{'status': 'success', 'tables_ready': 7}
+{'status': 'success', 'tables_ready': 9}
 ```
 
 For existing Unity Catalog tables, rerun `setup_uc_objects_wrapper` once after
@@ -298,6 +269,11 @@ agoda.gold.agoda_price_by_star
 Bronze và Silver idempotent theo `record_id`. Gold rebuild từ toàn bộ Silver
 history để bảng tổng hợp luôn gồm cả dữ liệu cũ và batch mới.
 
+Gold ghi bốn bảng tuần tự, không có transaction chung cho cả bốn bảng.
+Chỉ sử dụng kết quả sau khi Job và audit Gold của lần refresh tương ứng đều
+thành công; xem [hợp đồng publish Gold](databricks/README.md#gold-publication)
+để xử lý refresh đang chạy hoặc thất bại.
+
 ## 7. Khi thay đổi code hoặc cấu hình
 
 - Thay đổi crawler, Airflow scripts, `requirements.txt` hoặc Dockerfile:
@@ -329,6 +305,11 @@ Lệnh này chỉ crawl local; không tự upload hay trigger Databricks.
 
 ## Tài liệu chi tiết
 
+- [Luồng hoạt động và công nghệ](docs/workflow.md)
+- [Ngữ cảnh dự án](docs/PROJECT_CONTEXT.md)
+- [Quy ước phát triển và skills](AGENTS.md)
+- [Chạy crawler và benchmark](docs/RUNBOOK.md)
+- [Data contract và quality rules](docs/DATA_QUALITY.md)
 - [Airflow runbook](airflow/README.md)
 - [Databricks ETL](databricks/README.md)
 - [Manifest và ingestion contract](docs/DATABRICKS_INGESTION.md)

@@ -76,6 +76,7 @@ def run_gold_aggregations(spark: SparkSession, manifest_path: str) -> dict:
     runtime.require_tables(spark, config.SILVER_TABLE, config.AUDIT_TABLE, *config.GOLD_TABLES)
     input_records = 0
     try:
+        audit.write_audit(spark, manifest, "gold", "running")
         silver = spark.table(config.SILVER_TABLE)
         input_records = silver.count()
         if input_records == 0:

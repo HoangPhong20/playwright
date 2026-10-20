@@ -2,8 +2,8 @@
 from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlparse
 
-from agoda_crawler.enrichment.detail import merge_missing_fields
 from agoda_crawler.extraction.parsers import hotel_url_key
+from agoda_crawler.utils import merge_missing_fields
 
 
 def record_key(record: Dict) -> str:

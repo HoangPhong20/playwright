@@ -5,13 +5,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 import re
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from playwright.sync_api import Page
 
 from agoda_crawler.config import SAVE_DEBUG_ARTIFACTS
 from agoda_crawler.listing.collection import ListingCollectionMetrics
-from agoda_crawler.utils.logging import log
+from agoda_crawler.utils.logging import exception_message, log
 
 
 _DEBUG_CONTEXT: ContextVar[tuple[str, str, str] | None] = ContextVar(
@@ -110,9 +110,9 @@ def save_pagination_page_artifacts(
         try:
             html_path.write_text(page.content(), encoding="utf-8")
         except Exception as exc:
-            report["html_error"] = str(exc).splitlines()[0]
+            report["html_error"] = exception_message(exc)
         try:
             page.screenshot(path=str(png_path), full_page=True, timeout=10_000)
         except Exception as exc:
-            report["screenshot_error"] = str(exc).splitlines()[0]
+            report["screenshot_error"] = exception_message(exc)
     metrics_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

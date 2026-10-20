@@ -6,7 +6,7 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError
 
-from agoda_crawler.utils.logging import log, log_ignored_error
+from agoda_crawler.utils.logging import exception_message, log, log_ignored_error
 from agoda_crawler.navigation.urls import (
     build_city_search_urls as _build_city_search_urls,
     destination_pattern as _destination_pattern,
@@ -117,7 +117,7 @@ def search_hotels_via_ui(
             )
         except Exception as exc:
             last_error = exc
-            log(f"Search failed: {str(exc).splitlines()[0]}")
+            log(f"Search failed: {exception_message(exc)}")
 
     raise RuntimeError("Not hotel results page") from last_error
 
@@ -281,7 +281,7 @@ def _open_next_page_link(page: Page, page_number: int) -> bool:
             log(
                 "Pagination transition failed: "
                 f"page={page_number} reason=href_navigation_error "
-                f"error={str(exc).splitlines()[0]}"
+                f"error={exception_message(exc)}"
             )
             continue
     return False
@@ -551,7 +551,10 @@ def _open_ui_derived_city_search_url(
                 return wait_for_cards(page, timeout_ms=URL_FALLBACK_CARDS_TIMEOUT)
         except Exception as exc:
             last_error = exc
-            log(f"Search URL {idx}/{len(candidates)} no cards, trying next ({str(exc).splitlines()[0]})")
+            log(
+                f"Search URL {idx}/{len(candidates)} no cards, trying next "
+                f"({exception_message(exc)})"
+            )
 
     raise RuntimeError("No UI-derived city search URL produced hotel results") from last_error
 

@@ -1,0 +1,47 @@
+schema: spec-driven
+
+context: |
+  Language: Vietnamese
+  All artifacts must be written in Vietnamese.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Project: Agoda hotel observations by destination and stay date.
+  Pipeline: Python/Playwright -> JSONL + manifest -> Airflow verify/upload
+    -> Unity Catalog Volume -> Databricks Bronze -> Silver -> Gold.
+  Stack: Python, Playwright Chromium, Apache Airflow, Docker Compose,
+    PostgreSQL metadata, Databricks SDK, PySpark/Spark SQL, Delta, and YAML contracts.
+  Read AGENTS.md and relevant nested AGENTS.md files before work.
+  Start architecture discovery with docs/workflow.md; consult docs/RUNBOOK.md,
+    docs/DATA_QUALITY.md, and docs/DATABRICKS_INGESTION.md for detailed contracts.
+  Keep main.py and notebook wrappers thin; prefer existing package helpers.
+  Preserve immutable run attempts, explicit completion pointers, manifest-last
+    upload, upload receipts, and cleanup after Databricks success.
+  Preserve ledger/record_id idempotency, quarantine, audit evidence, and
+    per-job/global detail concurrency limits. Gold writes are sequential;
+    do not assume an atomic publication across all Gold tables.
+  Runtime output and debug files are transient; credentials stay out of Git.
+  Inspect current Git status and diffs before proposing or applying changes;
+    preserve unrelated edits.
+
+rules:
+  proposal:
+    - Ground the problem and scope in repository evidence; distinguish current behavior from the requested change.
+    - State compatibility impact when changing CLI, manifests, public JSONL, or ETL contracts.
+  specs:
+    - Describe observable requirements and concrete success, failure, and retry scenarios where relevant.
+  design:
+    - Use the change design.md as the authoritative Superpowers design artifact; avoid a duplicate plan elsewhere.
+    - Prefer small changes using existing modules; explain any new abstraction or dependency.
+    - Separate locally verifiable behavior from live browser, Airflow, and Databricks assumptions.
+  tasks:
+    - Keep one executable checklist in the change tasks.md; include affected files and acceptance evidence.
+    - For code changes, include focused regressions and verification following AGENTS.md; for documentation, review diffs and local links.
+
+operations:
+  apply:
+    guidance:
+      - Follow applicable Superpowers skills and the model routing preference in AGENTS.md.
+      - Keep task status and actual verification evidence current; report remaining gaps.
+  archive:
+    guidance:
+      - Check implementation against the change artifacts and report unresolved work before archiving.

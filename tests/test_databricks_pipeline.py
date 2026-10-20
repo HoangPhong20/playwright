@@ -13,7 +13,7 @@ SPEC.loader.exec_module(utils)
 
 PROJECT_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "databricks"))
-from agoda_etl import config
+from agoda_etl import config  # noqa: E402
 
 
 def complete_manifest() -> dict:
@@ -56,52 +56,21 @@ def test_bronze_input_schema_contract_excludes_airflow_metadata() -> None:
     assert metadata.issubset(config.OUTPUT_COLUMNS)
 
 
-def test_silver_and_gold_use_an_explicit_check_in_date() -> None:
+def test_bootstrap_retains_check_in_date_migration() -> None:
     project_root = Path(__file__).parents[1]
-    silver_source = (project_root / "databricks" / "agoda_etl" / "silver.py").read_text(encoding="utf-8")
-    gold_source = (project_root / "databricks" / "agoda_etl" / "gold.py").read_text(encoding="utf-8")
     bootstrap_source = (project_root / "databricks" / "agoda_etl" / "bootstrap.py").read_text(encoding="utf-8")
 
-    assert 'withColumn("check_in_date", F.to_date("check_in"))' in silver_source
-    assert 'groupBy("check_in_date", "destination")' in gold_source
     assert "delta.columnMapping.mode' = 'name" in bootstrap_source
     assert "RENAME COLUMN date TO check_in_date" in bootstrap_source
 
 
 def test_data_quality_contract_and_operational_tables_are_declared() -> None:
-    project_root = Path(__file__).parents[1]
-    contract_path = project_root / "databricks" / "contracts" / "agoda_hotel.yaml"
-    quality_source = (project_root / "databricks" / "agoda_etl" / "data_quality.py").read_text(encoding="utf-8")
-    bootstrap_source = (project_root / "databricks" / "agoda_etl" / "bootstrap.py").read_text(encoding="utf-8")
-
-    assert contract_path.is_file()
-    assert "version:" in contract_path.read_text(encoding="utf-8")
-    assert "read_raw_records" in quality_source
-    assert "validate_silver_records" in quality_source
-    assert "raw_record_json" in quality_source
-    assert "check_out_after_check_in" in quality_source
-    assert "QUARANTINE_TABLE" in bootstrap_source
-    assert "AUDIT_TABLE" in bootstrap_source
-
-
-def test_bronze_is_permissive_and_silver_owns_business_validation() -> None:
-    project_root = Path(__file__).parents[1]
-    bronze_source = (project_root / "databricks" / "agoda_etl" / "bronze.py").read_text(encoding="utf-8")
-    silver_source = (project_root / "databricks" / "agoda_etl" / "silver.py").read_text(encoding="utf-8")
-
-    assert "read_raw_records" in bronze_source
-    assert "validate_source_schema" not in bronze_source
-    assert "validate_silver_records" in silver_source
-    assert "raw_record_json" in (project_root / "databricks" / "agoda_etl" / "bootstrap.py").read_text(encoding="utf-8")
-
-
-def test_invalid_optional_metrics_are_defaulted_before_silver_validation() -> None:
-    source = (PROJECT_ROOT / "databricks" / "agoda_etl" / "data_quality.py").read_text(encoding="utf-8")
-
-    assert "def _default_invalid_optional_metrics" in source
-    assert 'F.lit("0")' in source
-    assert 'F.lit("0 stars")' in source
-    assert "_with_failure_rules(_default_invalid_optional_metrics(bronze))" in source
+    assert config.CONTRACT_VERSION == "1.1.0"
+    assert config.CONTRACT["validation_layer"] == "silver"
+    assert config.CONTRACT["fields"]["price_value"]["format"] == "positive_price"
+    assert config.CONTRACT["cross_field_rules"] == ["check_out_after_check_in"]
+    assert config.QUARANTINE_TABLE == "agoda.raw.agoda_hotel_quarantine"
+    assert config.AUDIT_TABLE == "agoda.raw.agoda_pipeline_audit"
 
 
 def test_manifest_exposes_expected_record_count_per_output_file() -> None:
@@ -111,10 +80,152 @@ def test_manifest_exposes_expected_record_count_per_output_file() -> None:
     }
 
 
-def test_bronze_retry_skips_a_fully_loaded_batch() -> None:
-    project_root = Path(__file__).parents[1]
-    bronze_source = (project_root / "databricks" / "agoda_etl" / "bronze.py").read_text(encoding="utf-8")
+MANIFEST_PATH = (
+    "/Volumes/agoda/raw/crawler/dag_id=agoda_daily_crawl/"
+    "batch_id=manual/attempt=1/run_manifest.json"
+)
 
-    assert "if skipped_files == len(source_files):" in bronze_source
-    assert '"files_loaded": 0, "files_skipped": skipped_files' in bronze_source
-    assert "Bronze ingestion already complete" in bronze_source
+
+def _manifest_with_job_fields(job_fields: dict) -> dict:
+    return {**complete_manifest(), **job_fields}
+
+
+def test_etl_manifest_accepts_shared_early_end_job(representative_job_manifest_fields):
+    manifest = _manifest_with_job_fields(representative_job_manifest_fields)
+
+    assert utils.manifest_output_record_counts(manifest, MANIFEST_PATH) == {
+        "/Volumes/agoda/raw/crawler/dag_id=agoda_daily_crawl/"
+        "batch_id=manual/attempt=1/agoda_hotels_2026-08-16.jsonl": 3
+    }
+
+
+def test_etl_manifest_accepts_unlimited_page_count(representative_job_manifest_fields):
+    job = representative_job_manifest_fields["jobs"][0]
+    job["pages_requested"] = 0
+    manifest = _manifest_with_job_fields(representative_job_manifest_fields)
+
+    assert utils.manifest_output_record_counts(manifest, MANIFEST_PATH)
+
+
+def test_etl_manifest_preserves_legacy_manifests_without_jobs():
+    assert utils.manifest_output_record_counts(complete_manifest(), MANIFEST_PATH)
+
+
+@pytest.mark.parametrize(
+    "job_change, message",
+    [
+        (lambda fields: fields.update(jobs=[]), "per-job outcomes"),
+        (lambda fields: fields.update(jobs=[None]), "job outcome"),
+        (
+            lambda fields: fields["jobs"][0].update(destination=""),
+            "job identity",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(destination=42),
+            "job identity",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(status="incomplete"),
+            "status",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(status="failed"),
+            "status",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(stop_reason="low_new_records"),
+            "stop reason",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(stop_reason="max_pages_reached"),
+            "page limit",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(
+                pages_requested=1,
+                pages_collected=1,
+                stop_reason="end_of_results",
+            ),
+            "conflicting stop reason",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(page_statuses={}),
+            "page statuses",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(
+                page_statuses={"1": "collected", "2": "collected"}
+            ),
+            "page statuses",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(pages_requested=True),
+            "page counts",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(pages_collected=True),
+            "page counts",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(pages_requested=-1),
+            "page counts",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(pages_collected=0),
+            "page counts",
+        ),
+        (
+            lambda fields: fields["jobs"][0].update(pages_collected=6),
+            "upper bound",
+        ),
+    ],
+)
+def test_etl_manifest_rejects_invalid_job_outcomes(
+    representative_job_manifest_fields, job_change, message
+):
+    job_change(representative_job_manifest_fields)
+    manifest = _manifest_with_job_fields(representative_job_manifest_fields)
+
+    with pytest.raises(ValueError, match=message):
+        utils.manifest_output_record_counts(manifest, MANIFEST_PATH)
+
+
+@pytest.mark.parametrize(
+    "planned_change, outcome_change",
+    [
+        (
+            lambda fields: fields["destinations"].append("Da Nang"),
+            None,
+        ),
+        (
+            None,
+            lambda fields: fields["jobs"].append(dict(fields["jobs"][0])),
+        ),
+    ],
+)
+def test_etl_manifest_requires_exact_planned_job_multiset(
+    representative_job_manifest_fields, planned_change, outcome_change
+):
+    if planned_change is not None:
+        planned_change(representative_job_manifest_fields)
+    if outcome_change is not None:
+        outcome_change(representative_job_manifest_fields)
+    manifest = _manifest_with_job_fields(representative_job_manifest_fields)
+
+    with pytest.raises(ValueError, match="do not match planned jobs"):
+        utils.manifest_output_record_counts(manifest, MANIFEST_PATH)
+
+
+@pytest.mark.parametrize(
+    "field, value, message",
+    [
+        ("airflow_try_number", True, "airflow_try_number"),
+        ("stays", [{"output_file": "x.jsonl", "publishable_records": True}], "publishable"),
+    ],
+)
+def test_etl_manifest_rejects_boolean_positive_integers(field, value, message):
+    manifest = complete_manifest()
+    manifest[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        utils.manifest_output_record_counts(manifest, MANIFEST_PATH)

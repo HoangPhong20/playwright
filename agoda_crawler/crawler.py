@@ -18,9 +18,9 @@ from agoda_crawler.enrichment.detail import (
     DEFAULT_DETAIL_ENRICH_FIELDS,
     browser_context_options as _browser_context_options,
     enrich_records_from_details as _enrich_records_from_details,
-    merge_missing_fields as _merge_missing_fields,
+    merge_missing_fields as _merge_missing_fields,  # noqa: F401
     needs_detail_enrichment as _needs_detail_enrichment,
-    with_stay_params as _with_stay_params,
+    with_stay_params as _with_stay_params,  # noqa: F401
 )
 from agoda_crawler.listing.page_crawl import (
     crawl_current_results_page as _crawl_current_results_page,
@@ -52,7 +52,7 @@ from agoda_crawler.utils.debug_artifacts import (
     save_pagination_page_artifacts as _save_pagination_page_artifacts,
     update_page_debug_status as _update_page_debug_status,
 )
-from agoda_crawler.utils.logging import log, log_ignored_error
+from agoda_crawler.utils.logging import exception_message, log, log_ignored_error
 from agoda_crawler.utils.page_helpers import wait_for_cards
 from agoda_crawler.utils.resource_blocking import apply_resource_blocking
 
@@ -386,7 +386,7 @@ def crawl_agoda_search_with_browser(
                     failure_evidence = {
                         "reason": "cards_not_ready_after_navigation",
                         "attempt": attempt,
-                        "error": str(exc).splitlines()[0],
+                        "error": exception_message(exc),
                     }
                     page_statuses[target_page] = "navigation_failed"
                     _save_pagination_page_artifacts(

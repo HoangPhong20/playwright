@@ -25,7 +25,7 @@ from agoda_crawler.jobs import (
 )
 from agoda_crawler.run_context import RunContext, run_context_from_args
 from agoda_crawler.utils.debug_artifacts import debug_run_context
-from agoda_crawler.utils.logging import log, log_prefix
+from agoda_crawler.utils.logging import exception_message, log, log_prefix
 from agoda_crawler.utils.run_output import (
     is_publishable_record,
     print_verification_summary,
@@ -99,10 +99,9 @@ def run_crawl_job_batch(
                             pagination_outcome=pagination,
                         )
                     except Exception as error:
-                        error_line = str(error).splitlines()
                         log(
                             f"Job failed: {type(error).__name__}: "
-                            f"{error_line[0] if error_line else '(no message)'}"
+                            f"{exception_message(error)}"
                         )
                         pagination.setdefault("pages_requested", max(0, args.max_pages))
                         pagination.setdefault("pages_collected", 0)

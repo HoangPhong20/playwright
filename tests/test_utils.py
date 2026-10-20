@@ -1,11 +1,10 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 from agoda_crawler.jobs import CrawlJob, CrawlJobResult
 from agoda_crawler.utils import append_jsonl
 from agoda_crawler.utils.debug_artifacts import debug_directory, debug_run_context
-from agoda_crawler.utils.logging import log_ignored_error, log_prefix
+from agoda_crawler.utils.logging import exception_message, log_ignored_error, log_prefix
 from agoda_crawler.utils.run_output import (
     is_publishable_record,
     optional_coverage_status,
@@ -42,6 +41,23 @@ def test_log_ignored_error_includes_context_type_and_prefix(capsys) -> None:
     captured = capsys.readouterr()
 
     assert captured.out == "[job-1] Scroll failed: ignored ValueError: bad state\n"
+
+
+def test_log_ignored_error_handles_empty_exception_message(capsys) -> None:
+    log_ignored_error("Scroll failed", RuntimeError())
+
+    assert capsys.readouterr().out == (
+        "Scroll failed: ignored RuntimeError: RuntimeError\n"
+    )
+
+
+def test_exception_message_keeps_first_line() -> None:
+    assert exception_message(ValueError("bad state\nmore detail")) == "bad state"
+
+
+def test_exception_message_uses_type_for_empty_or_whitespace_text() -> None:
+    assert exception_message(RuntimeError()) == "RuntimeError"
+    assert exception_message(ValueError(" \t ")) == "ValueError"
 
 
 def test_project_output_record_removes_debug_fields() -> None:

@@ -21,6 +21,15 @@ def compact_text(value: Optional[str]) -> Optional[str]:
     return cleaned if cleaned else None
 
 
+def merge_missing_fields(record: Dict, detail_fields: Dict) -> bool:
+    changed = False
+    for field, value in detail_fields.items():
+        if value and not record.get(field):
+            record[field] = value
+            changed = True
+    return changed
+
+
 def make_daily_output_path(base_dir: str, check_in: str) -> Path:
     path = Path(base_dir) / f"agoda_hotels_{check_in}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
