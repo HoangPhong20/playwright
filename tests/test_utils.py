@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from agoda_crawler.jobs import CrawlJob, CrawlJobResult
 from agoda_crawler.utils import append_jsonl
+from agoda_crawler.utils import crawl_metrics
 from agoda_crawler.utils.debug_artifacts import debug_directory, debug_run_context
 from agoda_crawler.utils.logging import exception_message, log_ignored_error, log_prefix
 from agoda_crawler.utils.run_output import (
@@ -82,6 +83,8 @@ def test_project_output_record_removes_debug_fields() -> None:
         "_listing_scroll_round": 12,
         "_pagination": {"pages_collected": 2},
         "_timing": {"total_seconds": 10},
+        "metrics": {"detail_candidates": 99},
+        "provenance": {"source": {"sha256": "internal-only"}},
     }
 
     output = project_output_record(record)
@@ -104,6 +107,8 @@ def test_project_output_record_removes_debug_fields() -> None:
     assert "_listing_scroll_round" not in output
     assert "_pagination" not in output
     assert "_timing" not in output
+    assert "metrics" not in output
+    assert "provenance" not in output
     assert "batch_id" not in output
     assert "airflow_dag_id" not in output
     assert "airflow_run_id" not in output
@@ -212,8 +217,53 @@ def test_verification_summary_reports_empty_job_outcome(capsys, tmp_path) -> Non
             "stop_reason": "low_new_records",
             "page_unique_record_counts": {"1": 0},
         },
+        metrics={
+            "detail_candidates": 3,
+            "detail_scheduled": 2,
+            "detail_attempts": 2,
+            "detail_failures": 1,
+        },
     )
 
     print_verification_summary([], elapsed_seconds=1, job_results=[result])
 
-    assert "job_pages[Da Nang 2026-06-10]: 1/5 status=incomplete " in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "job_pages[Da Nang 2026-06-10]: 1/5 status=incomplete " in output
+    assert "VERIFY_DETAIL_ATTEMPTED=0" in output
+    assert "VERIFY_DETAIL_CANDIDATES_ALL=3" in output
+    assert "VERIFY_DETAIL_SCHEDULED_ALL=2" in output
+    assert "VERIFY_DETAIL_ATTEMPTS_ALL=2" in output
+    assert "VERIFY_DETAIL_FAILURES_ALL=1" in output
+
+
+def test_aggregate_job_metrics_sums_work_and_takes_slot_and_scroll_maxima() -> None:
+    metrics = [
+        {
+            "search_wall_seconds": 1.5,
+            "regular_snapshot_count": 2,
+            "scroll_rounds_total": 3,
+            "scroll_rounds_max": 3,
+            "slot_acquire_count": 1,
+            "slot_wait_seconds_sum": 0.2,
+            "slot_wait_seconds_max": 0.2,
+        },
+        {
+            "search_wall_seconds": 0.5,
+            "regular_snapshot_count": 1,
+            "scroll_rounds_total": 2,
+            "scroll_rounds_max": 4,
+            "slot_acquire_count": 2,
+            "slot_wait_seconds_sum": 0.8,
+            "slot_wait_seconds_max": 0.5,
+        },
+    ]
+
+    summary = crawl_metrics.aggregate_job_metrics(metrics)
+
+    assert summary["search_wall_seconds"] == 2.0
+    assert summary["regular_snapshot_count"] == 3
+    assert summary["scroll_rounds_total"] == 5
+    assert summary["scroll_rounds_max"] == 4
+    assert summary["slot_acquire_count"] == 3
+    assert summary["slot_wait_seconds_sum"] == 1.0
+    assert summary["slot_wait_seconds_max"] == 0.5

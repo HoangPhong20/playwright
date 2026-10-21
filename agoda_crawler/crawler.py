@@ -42,6 +42,7 @@ from agoda_crawler.listing.records import (
 from agoda_crawler.listing.scrolling import scroll_y as _scroll_y
 from agoda_crawler.navigation import search_hotels_via_ui
 from agoda_crawler.utils.crawl_metrics import (
+    aggregate_scroll_metrics as _aggregate_scroll_metrics,
     attach_timing_summary as _attach_timing_summary,
     elapsed_seconds as _elapsed_seconds,
     format_seconds as _format_seconds,
@@ -58,6 +59,38 @@ from agoda_crawler.utils.resource_blocking import apply_resource_blocking
 
 
 PAGINATION_NAVIGATION_ATTEMPTS = 3
+
+
+def _new_crawl_metrics() -> Dict:
+    return {
+        "search_wall_seconds": 0.0,
+        "listing_wall_seconds": 0.0,
+        "detail_wall_seconds": 0.0,
+        "job_wall_seconds": 0.0,
+        "regular_snapshot_count": 0,
+        "full_snapshot_count": 0,
+        "dom_call_seconds": 0.0,
+        "embedded_call_seconds": 0.0,
+        "parse_dedupe_seconds": 0.0,
+        "merge_seconds": 0.0,
+        "active_wait_seconds": 0.0,
+        "other_seconds": 0.0,
+        "scroll_rounds_total": 0,
+        "scroll_rounds_max": 0,
+        "scroll_actions": 0,
+        "detail_candidates": 0,
+        "detail_scheduled": 0,
+        "detail_attempts": 0,
+        "detail_failures": 0,
+        "field_retries": 0,
+        "detail_missing_target_after_attempt": 0,
+        "slot_acquire_count": 0,
+        "slot_wait_seconds_sum": 0.0,
+        "slot_wait_seconds_max": 0.0,
+        "load_seconds_sum": 0.0,
+        "extract_seconds_sum": 0.0,
+        "record_seconds_sum": 0.0,
+    }
 
 
 def _navigate_to_results(
@@ -140,6 +173,7 @@ def _enrich_pending_records(
     field_retry_timeout: int,
     field_retry_count: int,
     detail_worker_semaphore=None,
+    metrics_outcome: Optional[Dict] = None,
 ) -> int:
     pending = [
         record
@@ -147,7 +181,12 @@ def _enrich_pending_records(
         if not record.get("enrich_status")
         and _needs_detail_enrichment(record, enrich_missing_only, detail_fields)
     ]
+    detail_candidates = len(pending)
+    if metrics_outcome is not None:
+        metrics_outcome["detail_candidates"] = detail_candidates
     if not pending:
+        if metrics_outcome is not None:
+            metrics_outcome["detail_scheduled"] = 0
         return detail_pages_used
 
     if max_detail_pages > 0:
@@ -156,28 +195,39 @@ def _enrich_pending_records(
             for record in pending:
                 record["enrich_status"] = "skipped"
                 record["enrich_error"] = "max_detail_pages_reached"
+            if metrics_outcome is not None:
+                metrics_outcome["detail_scheduled"] = 0
             return detail_pages_used
         pending = pending[:remaining]
 
-    _enrich_records_from_details(
-        context,
-        pending,
-        check_in=check_in,
-        check_out=check_out,
-        adults=adults,
-        rooms=rooms,
-        children=children,
-        max_detail_pages=0,
-        detail_concurrency=max(1, detail_concurrency),
-        headless=headless,
-        locale=locale,
-        enrich_missing_only=enrich_missing_only,
-        detail_timeout=detail_timeout,
-        detail_fields=detail_fields,
-        field_retry_timeout=field_retry_timeout,
-        field_retry_count=field_retry_count,
-        detail_worker_semaphore=detail_worker_semaphore,
-    )
+    detail_scheduled = len(pending)
+    detail_metrics: Dict = {}
+    try:
+        _enrich_records_from_details(
+            context,
+            pending,
+            check_in=check_in,
+            check_out=check_out,
+            adults=adults,
+            rooms=rooms,
+            children=children,
+            max_detail_pages=0,
+            detail_concurrency=max(1, detail_concurrency),
+            headless=headless,
+            locale=locale,
+            enrich_missing_only=enrich_missing_only,
+            detail_timeout=detail_timeout,
+            detail_fields=detail_fields,
+            field_retry_timeout=field_retry_timeout,
+            field_retry_count=field_retry_count,
+            detail_worker_semaphore=detail_worker_semaphore,
+            metrics_outcome=detail_metrics if metrics_outcome is not None else None,
+        )
+    finally:
+        if metrics_outcome is not None:
+            metrics_outcome.update(detail_metrics)
+            metrics_outcome["detail_candidates"] = detail_candidates
+            metrics_outcome["detail_scheduled"] = detail_scheduled
     return detail_pages_used + len(pending)
 
 
@@ -204,6 +254,7 @@ def crawl_agoda_search(
     field_retry_count: int = FIELD_RETRY_COUNT,
     detail_worker_semaphore=None,
     pagination_outcome: Optional[Dict] = None,
+    metrics_outcome: Optional[Dict] = None,
 ) -> List[Dict]:
     """
     Crawl Agoda hotel search results and return a list of hotel records.
@@ -216,41 +267,51 @@ def crawl_agoda_search(
     - click Search
     - validate hotel listing cards before extraction
     """
-    with sync_playwright() as p:
-        browser = None
-        try:
-            browser = p.chromium.launch(headless=headless)
-            return crawl_agoda_search_with_browser(
-                browser,
-                max_pages=max_pages,
-                destination=destination,
-                check_in=check_in,
-                check_out=check_out,
-                adults=adults,
-                rooms=rooms,
-                children=children,
-                locale=locale,
-                enrich_details=enrich_details,
-                max_detail_pages=max_detail_pages,
-                detail_concurrency=detail_concurrency,
-                enrich_missing_only=enrich_missing_only,
-                detail_timeout=detail_timeout,
-                max_scroll_rounds=max_scroll_rounds,
-                stable_rounds=stable_rounds,
-                scroll_wait_ms=scroll_wait_ms,
-                headless=headless,
-                detail_fields=detail_fields,
-                field_retry_timeout=field_retry_timeout,
-                field_retry_count=field_retry_count,
-                detail_worker_semaphore=detail_worker_semaphore,
-                pagination_outcome=pagination_outcome,
+    standalone_started_at = time.perf_counter()
+    if metrics_outcome is not None:
+        metrics_outcome.update(_new_crawl_metrics())
+    browser = None
+    try:
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(headless=headless)
+                return crawl_agoda_search_with_browser(
+                    browser,
+                    max_pages=max_pages,
+                    destination=destination,
+                    check_in=check_in,
+                    check_out=check_out,
+                    adults=adults,
+                    rooms=rooms,
+                    children=children,
+                    locale=locale,
+                    enrich_details=enrich_details,
+                    max_detail_pages=max_detail_pages,
+                    detail_concurrency=detail_concurrency,
+                    enrich_missing_only=enrich_missing_only,
+                    detail_timeout=detail_timeout,
+                    max_scroll_rounds=max_scroll_rounds,
+                    stable_rounds=stable_rounds,
+                    scroll_wait_ms=scroll_wait_ms,
+                    headless=headless,
+                    detail_fields=detail_fields,
+                    field_retry_timeout=field_retry_timeout,
+                    field_retry_count=field_retry_count,
+                    detail_worker_semaphore=detail_worker_semaphore,
+                    pagination_outcome=pagination_outcome,
+                    metrics_outcome=metrics_outcome,
+                )
+            finally:
+                if browser is not None:
+                    try:
+                        browser.close()
+                    except Exception as exc:
+                        log_ignored_error("Browser close failed", exc)
+    finally:
+        if metrics_outcome is not None:
+            metrics_outcome["job_wall_seconds"] = (
+                time.perf_counter() - standalone_started_at
             )
-        finally:
-            if browser is not None:
-                try:
-                    browser.close()
-                except Exception as exc:
-                    log_ignored_error("Browser close failed", exc)
 
 
 def crawl_agoda_search_with_browser(
@@ -277,15 +338,35 @@ def crawl_agoda_search_with_browser(
     field_retry_count: int = FIELD_RETRY_COUNT,
     detail_worker_semaphore=None,
     pagination_outcome: Optional[Dict] = None,
+    metrics_outcome: Optional[Dict] = None,
 ) -> List[Dict]:
     """Crawl one Agoda search using an existing browser instance."""
-    _validate_supported_occupancy(adults, rooms, children)
-
     job_started_at = time.perf_counter()
     timing: Dict[str, float] = {}
     results_by_key: Dict[str, Dict] = {}
     context = None
+    search_started_at = None
+    listing_started_at = None
+    detail_started_at = None
+    work_finished_at = None
+    job_metrics = _new_crawl_metrics()
+
+    def accumulate_listing_work(work: Dict) -> None:
+        for key in (
+            "regular_snapshot_count",
+            "full_snapshot_count",
+            "dom_call_seconds",
+            "embedded_call_seconds",
+            "parse_dedupe_seconds",
+            "merge_seconds",
+            "active_wait_seconds",
+            "other_seconds",
+        ):
+            job_metrics[key] += work.get(key, 0)
+
+    scroll_attempt_metrics: List[Dict] = []
     try:
+        _validate_supported_occupancy(adults, rooms, children)
         context = browser.new_context(**_browser_context_options(locale))
         apply_resource_blocking(context)
         page: Page = context.new_page()
@@ -300,7 +381,10 @@ def crawl_agoda_search_with_browser(
             rooms,
             children,
         )
-        timing["search_seconds"] = _elapsed_seconds(search_started_at)
+        search_completed_at = time.perf_counter()
+        job_metrics["search_wall_seconds"] = search_completed_at - search_started_at
+        timing["search_seconds"] = round(job_metrics["search_wall_seconds"], 2)
+        search_started_at = None
         log(f"Timing: search={_format_seconds(timing['search_seconds'])}")
 
         requested_pages = max_pages if max_pages > 0 else 0
@@ -319,19 +403,29 @@ def crawl_agoda_search_with_browser(
         detail_seconds = 0.0
 
         listing_started_at = time.perf_counter()
-        page_result = _crawl_current_results_page(
-            page,
-            card_selector,
-            current_page,
-            max_rounds=max_scroll_rounds,
-            stable_rounds=stable_rounds,
-            scroll_wait_ms=scroll_wait_ms,
-        )
+        first_page_work_metrics: Dict[str, int] = {}
+        try:
+            page_result = _crawl_current_results_page(
+                page,
+                card_selector,
+                current_page,
+                max_rounds=max_scroll_rounds,
+                stable_rounds=stable_rounds,
+                scroll_wait_ms=scroll_wait_ms,
+                work_metrics_out=first_page_work_metrics,
+            )
+        except Exception:
+            accumulate_listing_work(first_page_work_metrics)
+            scroll_attempt_metrics.append(first_page_work_metrics)
+            raise
+        accumulate_listing_work(page_result.work_metrics)
         page_records = page_result.records
+        first_page_scroll_summary = _page_scroll_summary(page_result)
+        scroll_attempt_metrics.append(first_page_scroll_summary)
         accepted_state = _capture_pagination_state(page, current_page, page_records)
         page_unique_url_counts[current_page] = len(accepted_state.canonical_urls)
         page_unique_record_counts[current_page] = len(page_records)
-        page_scroll_summaries[current_page] = _page_scroll_summary(page_result)
+        page_scroll_summaries[current_page] = first_page_scroll_summary
         page_statuses[current_page] = "collected"
         _update_page_debug_status(current_page, "collected")
         new_count = _merge_records_into_results(results_by_key, page_records)
@@ -402,13 +496,19 @@ def crawl_agoda_search_with_browser(
                     )
                     continue
                 scroll_y_after_navigation = _scroll_y(page)
-                probe_state = _probe_current_page_state(
-                    page,
-                    card_selector,
-                    target_page,
-                    scroll_y_after_navigation=scroll_y_after_navigation,
-                    scroll_wait_ms=scroll_wait_ms,
-                )
+                probe_work_metrics: Dict[str, int] = {}
+                try:
+                    probe_state = _probe_current_page_state(
+                        page,
+                        card_selector,
+                        target_page,
+                        scroll_y_after_navigation=scroll_y_after_navigation,
+                        scroll_wait_ms=scroll_wait_ms,
+                        work_metrics_out=probe_work_metrics,
+                    )
+                finally:
+                    accumulate_listing_work(probe_work_metrics)
+                    scroll_attempt_metrics.append(probe_work_metrics)
                 probe_evidence = (
                     _pagination_change_evidence(accepted_state, probe_state)
                     if accepted_state
@@ -441,14 +541,24 @@ def crawl_agoda_search_with_browser(
                     page.wait_for_timeout(500)
                 except Exception as exc:
                     log_ignored_error(f"Page {target_page}: scroll reset failed", exc)
-                candidate_result = _crawl_current_results_page(
-                    page,
-                    card_selector,
-                    target_page,
-                    max_rounds=max_scroll_rounds,
-                    stable_rounds=stable_rounds,
-                    scroll_wait_ms=scroll_wait_ms,
-                )
+                candidate_work_metrics: Dict[str, int] = {}
+                try:
+                    candidate_result = _crawl_current_results_page(
+                        page,
+                        card_selector,
+                        target_page,
+                        max_rounds=max_scroll_rounds,
+                        stable_rounds=stable_rounds,
+                        scroll_wait_ms=scroll_wait_ms,
+                        work_metrics_out=candidate_work_metrics,
+                    )
+                except Exception:
+                    accumulate_listing_work(candidate_work_metrics)
+                    scroll_attempt_metrics.append(candidate_work_metrics)
+                    raise
+                accumulate_listing_work(candidate_result.work_metrics)
+                candidate_scroll_summary = _page_scroll_summary(candidate_result)
+                scroll_attempt_metrics.append(candidate_scroll_summary)
                 candidate_records = candidate_result.records
                 candidate_state = _capture_pagination_state(
                     page,
@@ -476,7 +586,7 @@ def crawl_agoda_search_with_browser(
                     )
                     pages_collected += 1
                     page_unique_record_counts[target_page] = len(candidate_records)
-                    page_scroll_summaries[target_page] = _page_scroll_summary(candidate_result)
+                    page_scroll_summaries[target_page] = candidate_scroll_summary
                     page_statuses[target_page] = "collected"
                     _update_page_debug_status(target_page, "collected", evidence)
                     accepted_state = candidate_state
@@ -554,10 +664,14 @@ def crawl_agoda_search_with_browser(
             status=job_status,
             stop_reason=stop_reason,
         )
+        summary.update(_aggregate_scroll_metrics(scroll_attempt_metrics))
         if pagination_outcome is not None:
             pagination_outcome.update(summary)
+        job_metrics["listing_wall_seconds"] = time.perf_counter() - listing_started_at
+        listing_started_at = None
         if enrich_details and job_status == "complete":
             detail_batch_started_at = time.perf_counter()
+            detail_started_at = detail_batch_started_at
             detail_pages_used = _enrich_pending_records(
                 context,
                 all_results,
@@ -577,7 +691,12 @@ def crawl_agoda_search_with_browser(
                 field_retry_timeout,
                 field_retry_count,
                 detail_worker_semaphore,
+                metrics_outcome=job_metrics,
             )
+            job_metrics["detail_wall_seconds"] = (
+                time.perf_counter() - detail_started_at
+            )
+            detail_started_at = None
             detail_seconds += _elapsed_seconds(detail_batch_started_at)
             timing["detail_seconds"] = detail_seconds
             log(f"Timing: detail={_format_seconds(timing['detail_seconds'])}")
@@ -595,10 +714,21 @@ def crawl_agoda_search_with_browser(
             f"bottleneck={_timing_bottleneck(timing)}"
         )
     finally:
+        work_finished_at = time.perf_counter()
+        job_metrics.update(_aggregate_scroll_metrics(scroll_attempt_metrics))
+        if search_started_at is not None:
+            job_metrics["search_wall_seconds"] = work_finished_at - search_started_at
+        if listing_started_at is not None:
+            job_metrics["listing_wall_seconds"] = work_finished_at - listing_started_at
+        if detail_started_at is not None:
+            job_metrics["detail_wall_seconds"] = work_finished_at - detail_started_at
         if context is not None:
             try:
                 context.close()
             except Exception as exc:
                 log_ignored_error("Context close failed", exc)
+        job_metrics["job_wall_seconds"] = time.perf_counter() - job_started_at
+        if metrics_outcome is not None:
+            metrics_outcome.update(job_metrics)
 
     return list(results_by_key.values())

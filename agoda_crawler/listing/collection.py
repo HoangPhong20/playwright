@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
@@ -16,7 +17,13 @@ from agoda_crawler.extraction.parsers import (
     name_from_hotel_url as _name_from_hotel_url,
     parse_textual_fallback as _parse_textual_fallback,
 )
-from agoda_crawler.listing.records import merge_page_record
+from agoda_crawler.extraction.selectors import (
+    LISTING_CARD_MEMBERSHIP_CLASSIFIER_JS,
+    LISTING_CARD_MEMBERSHIP_CONFIG,
+    LISTING_MEMBERSHIP_BROAD_CARD_SELECTORS,
+    LISTING_CARD_SELECTORS,
+)
+from agoda_crawler.listing.records import merge_page_record, property_identity_value
 from agoda_crawler.utils import compact_text
 
 
@@ -62,6 +69,13 @@ class ListingCollectionMetrics:
     cards_without_name_count: int = 0
     scroll_y: int = 0
     invalid_card_samples: List[Dict[str, Any]] = field(default_factory=list)
+    regular_snapshot_count: int = 0
+    full_snapshot_count: int = 0
+    dom_call_seconds: float = 0.0
+    embedded_call_seconds: float = 0.0
+    parse_dedupe_seconds: float = 0.0
+    merge_seconds: float = 0.0
+    embedded_candidates_seen: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -71,6 +85,7 @@ class ListingCollectionMetrics:
 class ListingCollectionSnapshot:
     records: List[Dict]
     metrics: ListingCollectionMetrics
+    embedded_nonmember_records: List[Dict] = field(default_factory=list, repr=False)
 
 
 def normalize_hotel_url(raw_url: str, base_url: str) -> Optional[str]:
@@ -129,16 +144,33 @@ def collect_listing_snapshot(
     page_number: int,
     include_embedded: bool = True,
     include_broad_selectors: bool = True,
+    *,
+    observed_records: Optional[List[Dict]] = None,
 ) -> ListingCollectionSnapshot:
     """Collect hotel identity candidates quickly from the current listing DOM."""
+    dom_started_at = time.perf_counter()
     raw_cards = _evaluate_listing_dom(
         page,
         card_selector,
         include_broad_selectors=include_broad_selectors,
     )
-    embedded_cards = _evaluate_embedded_hotel_url_cards(page) if include_embedded else []
+    dom_call_seconds = time.perf_counter() - dom_started_at
+
+    embedded_call_seconds = 0.0
+    if include_embedded:
+        embedded_started_at = time.perf_counter()
+        embedded_cards = _evaluate_embedded_hotel_url_cards(page)
+        embedded_call_seconds = time.perf_counter() - embedded_started_at
+    else:
+        embedded_cards = []
     candidate_cards = raw_cards + embedded_cards
+    parse_started_at = time.perf_counter()
+    merge_seconds = 0.0
     records_by_key: Dict[str, Dict] = {}
+    for observed in observed_records or []:
+        merge_started_at = time.perf_counter()
+        merge_page_record(records_by_key, dict(observed))
+        merge_seconds += time.perf_counter() - merge_started_at
     valid_url_count = 0
     candidate_url_count = 0
     cards_without_url_count = 0
@@ -147,8 +179,10 @@ def collect_listing_snapshot(
     anchorless_card_count = 0
     canonical_url_keys: set[str] = set()
     invalid_card_samples: List[Dict[str, Any]] = []
+    embedded_nonmember_records: List[Dict] = []
 
     for card_index, raw_card in enumerate(candidate_cards):
+        is_embedded = card_index >= len(raw_cards)
         raw_urls = [value for value in raw_card.get("urls", []) if value]
         if not raw_card.get("anchorHrefs"):
             anchorless_card_count += 1
@@ -184,7 +218,7 @@ def collect_listing_snapshot(
         if canonical_url:
             canonical_url_keys.add(canonical_url)
 
-        if not name and hotel_url:
+        if not name and hotel_url and not is_embedded:
             name = _name_from_hotel_url(hotel_url)
 
         record = _empty_record(name, hotel_url)
@@ -201,7 +235,7 @@ def collect_listing_snapshot(
         record["card_tag"] = raw_card.get("tagName")
         record["card_data_selenium"] = raw_card.get("dataSelenium")
         record["card_data_testid"] = raw_card.get("dataTestId")
-        record["listing_property_id"] = property_id
+        record["listing_property_id"] = property_id or property_identity_value(record)
 
         parsed = _parse_textual_fallback(raw_text)
         record["price_value"] = parsed["price_value"]
@@ -231,9 +265,33 @@ def collect_listing_snapshot(
                 },
             }
 
+        membership_evidence = raw_card.get("membershipEvidence", "strict")
+        if (
+            not is_embedded
+            and membership_evidence == "unverified"
+            and not _matches_observed_record(record, records_by_key.values())
+        ):
+            continue
+
+        if is_embedded and not _matches_observed_record(record, records_by_key.values()):
+            embedded_nonmember_records.append(
+                {
+                    "hotel_url": hotel_url,
+                    "canonical_url": canonical_url,
+                    "listing_property_id": record["listing_property_id"],
+                }
+            )
+            continue
+
+        merge_started_at = time.perf_counter()
         merge_page_record(records_by_key, record)
+        merge_seconds += time.perf_counter() - merge_started_at
 
     unique_hotel_count = len(records_by_key)
+    parse_dedupe_seconds = max(
+        0.0,
+        time.perf_counter() - parse_started_at - merge_seconds,
+    )
     metrics = ListingCollectionMetrics(
         dom_card_count=len(raw_cards),
         candidate_records=len(candidate_cards),
@@ -249,8 +307,35 @@ def collect_listing_snapshot(
         cards_without_name_count=cards_without_name_count,
         scroll_y=_scroll_y(page),
         invalid_card_samples=invalid_card_samples,
+        regular_snapshot_count=int(not (include_embedded and include_broad_selectors)),
+        full_snapshot_count=int(include_embedded and include_broad_selectors),
+        dom_call_seconds=dom_call_seconds,
+        embedded_call_seconds=embedded_call_seconds,
+        parse_dedupe_seconds=parse_dedupe_seconds,
+        merge_seconds=merge_seconds,
+        embedded_candidates_seen=len(embedded_cards),
     )
-    return ListingCollectionSnapshot(list(records_by_key.values()), metrics)
+    return ListingCollectionSnapshot(
+        list(records_by_key.values()),
+        metrics,
+        embedded_nonmember_records,
+    )
+
+
+def _matches_observed_record(candidate: Dict, observed_records) -> bool:
+    candidate_id = property_identity_value(candidate)
+    candidate_url = candidate.get("hotel_url") or candidate.get("canonical_url")
+    candidate_url_key = _hotel_url_key(candidate_url) if candidate_url else None
+    for observed in observed_records:
+        observed_id = property_identity_value(observed)
+        if candidate_id and observed_id and candidate_id != observed_id:
+            continue
+        observed_url = observed.get("hotel_url") or observed.get("canonical_url")
+        if candidate_url_key and observed_url and candidate_url_key == _hotel_url_key(observed_url):
+            return True
+        if candidate_id and candidate_id == observed_id:
+            return True
+    return False
 
 
 def _card_debug_sample(raw_card: Dict, name: Optional[str], raw_text: Optional[str]) -> Dict[str, Any]:
@@ -413,11 +498,11 @@ def _name_from_card_text(text: Optional[str]) -> Optional[str]:
     if opened_name:
         return opened_name
 
-    parts = [
-        compact_text(part)
-        for part in normalized.replace("|", "\n").split("\n")
-        if compact_text(part)
-    ]
+    parts: list[str] = []
+    for raw_part in normalized.replace("|", "\n").split("\n"):
+        part = compact_text(raw_part)
+        if part:
+            parts.append(part)
     if not parts:
         parts = [normalized]
 
@@ -553,30 +638,47 @@ def _evaluate_listing_dom(
     card_selector: str,
     include_broad_selectors: bool = True,
 ) -> List[Dict]:
-    strict_selectors = [
-        card_selector,
-        '[data-selenium="hotel-item"]',
-        '[data-selenium="hotel-item-container"]',
-        '[data-testid="property-card"]',
-        '[data-testid="search-result-card"]',
-        '[data-testid="hotel-card"]',
-        '[data-element-name="property-card"]',
-        '[data-element-name="hotel-item"]',
-        'li[data-selenium="hotel-item"]',
-    ]
-    broad_selectors = [
-        'article:has(a[href*="/hotel/"], a[href*="propertyId=" i])',
-        'li[data-hotelid]',
-        'li:has(a[href*="/hotel/"], a[href*="propertyId=" i])',
-        'div[data-testid^="property-card" i]',
-    ]
+    strict_selectors = list(dict.fromkeys([card_selector, *LISTING_CARD_SELECTORS]))
+    broad_selectors = LISTING_MEMBERSHIP_BROAD_CARD_SELECTORS
     selectors = strict_selectors + broad_selectors if include_broad_selectors else strict_selectors
     try:
-        rows = page.evaluate(
-            """
-            selectors => {
+        script = """
+            ({selectors, membershipConfig}) => {
+                const createMembershipClassifier = __LISTING_MEMBERSHIP_CLASSIFIER__;
+                const membershipEvidence = createMembershipClassifier(membershipConfig);
                 const cards = [];
                 const seen = new Set();
+                const isExcluded = (element) => membershipEvidence(element) === 'excluded';
+                const textWithoutExcluded = (element) => {
+                    if (!element.querySelector(membershipConfig.excludedContextSelector)) {
+                        return element.innerText || '';
+                    }
+                    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+                    const visibleText = [];
+                    let node;
+                    while ((node = walker.nextNode())) {
+                        let current = node.parentElement;
+                        let visible = true;
+                        while (current && current !== element.parentElement) {
+                            if (isExcluded(current) || current.hidden) {
+                                visible = false;
+                                break;
+                            }
+                            const style = window.getComputedStyle(current);
+                            if (
+                                style.display === 'none' ||
+                                style.visibility === 'hidden' ||
+                                style.visibility === 'collapse'
+                            ) {
+                                visible = false;
+                                break;
+                            }
+                            current = current.parentElement;
+                        }
+                        if (visible && node.nodeValue) visibleText.push(node.nodeValue);
+                    }
+                    return visibleText.join(' ');
+                };
                 const textSignal = (value) => {
                     const text = (value || '')
                         .normalize('NFD')
@@ -586,9 +688,10 @@ def _evaluate_listing_dom(
                     return /(?:VND|reviews?|nhan xet|danh gia|gia moi dem|per night|hotel|khach san)/i.test(text);
                 };
                 const firstText = (element, selector) => {
-                    const found = element.querySelector(selector);
+                    const found = Array.from(element.querySelectorAll(selector))
+                        .find((node) => !isExcluded(node));
                     return found ? (
-                        found.innerText ||
+                        textWithoutExcluded(found) ||
                         found.getAttribute('aria-label') ||
                         found.getAttribute('title') ||
                         ''
@@ -600,7 +703,8 @@ def _evaluate_listing_dom(
                         if (direct) return direct;
                     }
                     const selector = names.map((name) => `[${name}]`).join(',');
-                    const found = element.querySelector(selector);
+                    const found = Array.from(element.querySelectorAll(selector))
+                        .find((node) => !isExcluded(node));
                     if (!found) return '';
                     for (const name of names) {
                         const value = found.getAttribute(name);
@@ -658,14 +762,14 @@ def _evaluate_listing_dom(
                     let parent = element.parentElement;
                     let depth = 0;
                     while (parent && depth < 5) {
-                        if (parent.matches && parent.matches('a[href]')) {
+                        if (parent.matches && parent.matches('a[href]') && !isExcluded(parent)) {
                             anchors.push(parent);
                         }
                         parent = parent.parentElement;
                         depth += 1;
                     }
 
-                    for (const anchor of anchors) {
+                    for (const anchor of anchors.filter((node) => !isExcluded(node))) {
                         const href = anchor.href || anchor.getAttribute('href') || '';
                         if (href) {
                             anchorHrefs.push(href);
@@ -675,7 +779,8 @@ def _evaluate_listing_dom(
 
                     const attrElements = [
                         element,
-                        ...Array.from(element.querySelectorAll('[href], [onclick], [role="link"], [data-href], [data-url], [data-link], [data-target-url], [data-property-url], [data-selenium], [data-testid]')).slice(0, 80),
+                        ...Array.from(element.querySelectorAll('[href], [onclick], [role="link"], [data-href], [data-url], [data-link], [data-target-url], [data-property-url], [data-selenium], [data-testid]'))
+                            .filter((node) => !isExcluded(node)).slice(0, 80),
                     ];
                     for (const node of attrElements) {
                         for (const attr of Array.from(node.attributes || [])) {
@@ -700,18 +805,30 @@ def _evaluate_listing_dom(
                 };
                 const add = (element, sourceSelector) => {
                     if (!element || seen.has(element)) return;
+                    let candidateMembership = membershipEvidence(element);
+                    if (candidateMembership === 'excluded') return;
+                    if (
+                        sourceSelector === 'hotel-anchor-closest' &&
+                        candidateMembership !== 'strict' &&
+                        !element.matches(membershipConfig.broadCardSelector)
+                    ) {
+                        candidateMembership = 'unverified';
+                    }
                     seen.add(element);
                     const urlData = collectUrlCandidates(element);
                     const anchors = Array.from(element.querySelectorAll('a[href]'));
-                    if (element.matches && element.matches('a[href]')) anchors.unshift(element);
+                    if (element.matches && element.matches('a[href]') && !isExcluded(element)) {
+                        anchors.unshift(element);
+                    }
                     const hotelAnchors = anchors.filter((anchor) => {
+                        if (isExcluded(anchor)) return false;
                         const href = anchor.href || anchor.getAttribute('href') || '';
                         return href.includes('/hotel/') || isPropertyIdRoute(href);
                     });
                     const nameAnchor = hotelAnchors.find((anchor) => (
-                        anchor.innerText || anchor.getAttribute('aria-label') || anchor.getAttribute('title')
+                        textWithoutExcluded(anchor) || anchor.getAttribute('aria-label') || anchor.getAttribute('title')
                     ));
-                    const text = (element.innerText || '').replace(/\\s+/g, ' ').trim();
+                    const text = textWithoutExcluded(element).replace(/\\s+/g, ' ').trim();
                     const nameSelectorText = firstText(
                         element,
                         [
@@ -725,7 +842,7 @@ def _evaluate_listing_dom(
                     const name = (
                         nameSelectorText ||
                         (nameAnchor && (
-                            nameAnchor.innerText ||
+                            textWithoutExcluded(nameAnchor) ||
                             nameAnchor.getAttribute('aria-label') ||
                             nameAnchor.getAttribute('title')
                         )) ||
@@ -733,7 +850,8 @@ def _evaluate_listing_dom(
                         element.getAttribute('title') ||
                         ''
                     ).replace(/\\s+/g, ' ').trim();
-                    const img = element.querySelector('img');
+                    const img = Array.from(element.querySelectorAll('img'))
+                        .find((node) => !isExcluded(node));
                     const imageAlt = img ? (img.alt || img.title || img.getAttribute('aria-label') || '') : '';
                     const propertyId = firstAttribute(
                         element,
@@ -752,6 +870,7 @@ def _evaluate_listing_dom(
                         tagName: element.tagName || '',
                         sourceSelector,
                         propertyId,
+                        membershipEvidence: candidateMembership,
                         outerHtmlPreview: (element.outerHTML || '').replace(/\\s+/g, ' ').trim().slice(0, 1000),
                     });
                 };
@@ -775,15 +894,25 @@ def _evaluate_listing_dom(
                 }
 
                 document.querySelectorAll('a[href*="/hotel/"], a[href*="propertyId=" i]').forEach((anchor) => {
+                    if (isExcluded(anchor)) return;
                     const href = anchor.href || anchor.getAttribute('href') || '';
                     if (!href.includes('/hotel/') && !isPropertyIdRoute(href)) return;
-                    add(anchor.closest('article, li, [data-testid*="card" i], [data-selenium*="hotel" i], div') || anchor, 'hotel-anchor-closest');
+                    const card = anchor.closest('article, li, [data-testid*="card" i], [data-selenium*="hotel" i], div');
+                    if (card) add(card, 'hotel-anchor-closest');
                 });
 
                 return cards;
             }
-            """,
-            selectors,
+            """.replace(
+                "__LISTING_MEMBERSHIP_CLASSIFIER__",
+                LISTING_CARD_MEMBERSHIP_CLASSIFIER_JS,
+            )
+        rows = page.evaluate(
+            script,
+            {
+                "selectors": selectors,
+                "membershipConfig": LISTING_CARD_MEMBERSHIP_CONFIG,
+            },
         )
     except Exception:
         return []

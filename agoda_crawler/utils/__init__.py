@@ -4,7 +4,7 @@ import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 _JSONL_LOCKS: Dict[Path, threading.Lock] = {}
 _JSONL_LOCKS_GUARD = threading.Lock()
@@ -46,5 +46,5 @@ def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def as_json(record: Dict[str, Any]) -> str:
+def as_json(record: Union[Dict[str, Any], List[Dict[str, Any]]]) -> str:
     return json.dumps(record, ensure_ascii=True)

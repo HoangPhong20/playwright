@@ -9,7 +9,7 @@ from pathlib import Path
 from agoda_crawler.run_context import RunContext
 from agoda_crawler.run_manifest import (
     completed_manifest_path,
-    expected_manifest_path,
+    expected_manifest_path as expected_manifest_path,
     validate_manifest,
 )
 

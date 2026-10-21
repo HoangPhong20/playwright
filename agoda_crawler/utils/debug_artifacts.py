@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 import re
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from playwright.sync_api import Page
 
@@ -36,6 +36,38 @@ def debug_directory(category: str) -> Path:
     run_id, destination, check_in = context
     destination_slug = re.sub(r"[^a-z0-9]+", "-", destination.lower()).strip("-") or "unknown"
     return Path("debug") / run_id / destination_slug / check_in / category
+
+
+def save_membership_diagnostics(
+    page_number: int,
+    diagnostics: Dict[str, Any],
+    *,
+    attempt_kind: str = "crawl",
+) -> Path:
+    """Write page-scoped membership counters and a bounded URL sample."""
+    safe_kind = re.sub(r"[^a-z0-9_-]+", "-", attempt_kind.lower()).strip("-_") or "crawl"
+    sample_urls = [
+        value[:500]
+        for value in diagnostics.get("sample_urls", [])
+        if isinstance(value, str) and value
+    ][:25]
+    report: Dict[str, Any] = {
+        "page_number": page_number,
+        "attempt_kind": safe_kind,
+        "embedded_candidates_seen": int(diagnostics.get("embedded_candidates_seen", 0)),
+        "embedded_nonmember_unique": int(diagnostics.get("embedded_nonmember_unique", 0)),
+        "embedded_unmatched_at_end": int(diagnostics.get("embedded_unmatched_at_end", 0)),
+        "sample_urls": sample_urls,
+    }
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    debug_dir = debug_directory("membership")
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    report_path = debug_dir / f"page_{page_number}_{safe_kind}_{timestamp}.json"
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return report_path
 
 
 def save_listing_debug_artifacts(

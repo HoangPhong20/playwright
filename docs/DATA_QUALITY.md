@@ -115,6 +115,47 @@ do not affect that key. Observations with the same property identity merge in
 either order; different property IDs remain separate even when the display name
 matches.
 
+## Phạm vi hotel cards và embedded
+
+Membership được tích lũy từ hotel cards trong từng trang, kể cả card đã rời
+DOM do giao diện virtualized. Embedded URL chỉ bổ sung cho record có cùng
+canonical URL hoặc property identity đã quan sát; hai property ID xung đột
+không được ghép. Trùng tên hoặc city suffix không đủ để gắn embedded URL.
+Card partial thiếu URL vẫn được giữ để merge khi có bằng chứng; khách sạn ở
+khu vực lân cận có card thật trong kết quả vẫn thuộc phạm vi thu thập.
+
+Các đường fallback và probe cũng phải tuân theo phạm vi này. Hotel link ở
+recommendation/footer không tự tạo candidate cho enrichment hoặc JSONL public.
+Embedded không khớp được đếm riêng với required-field discard; chúng không
+thuộc mẫu số `discarded_records / total_records_after_merge`.
+
+`embedded_candidates_seen` đếm số lần quan sát. `embedded_nonmember_unique`
+đếm URL chuẩn hóa chưa khớp tại thời điểm quan sát, duy nhất trong từng trang;
+`embedded_unmatched_at_end` phản ánh phần vẫn chưa khớp khi kết thúc trang.
+Tổng các page-unique counts không phải số URL duy nhất toàn batch. Diagnostics
+membership giữ tối đa 25 URL mẫu/trang, mỗi URL tối đa 500 ký tự, trong scope
+`debug/<batch-id>/<destination>/<check-in>/membership/`. Mẫu được ghi vào file
+`page_<page>_<crawl-or-probe>_<timestamp>.json`; ba counter theo từng trang được
+giữ trong `page_scroll_summaries` của pagination outcome. Các mẫu URL không được
+đưa vào JSONL public.
+
+Membership ưu tiên các marker hotel card đã biết. Broad cards dạng `article`
+và `li` chỉ được tạo membership trong vùng search-results đã nhận diện, hoặc
+`main`/`[role="main"]` khi không có vùng search-results. Một phần tử cha bất kỳ
+chứa hotel link không tự chứng minh membership; nó chỉ được bổ sung record có
+canonical URL hoặc property identity đã quan sát. Card không có marker và nằm
+ngoài vùng listing được xác minh không tự tạo record mới; vì vậy markup chưa
+được hỗ trợ có thể làm giảm số card thu được và cần bằng chứng trước khi nới
+fallback.
+
+Wrapper chỉ chứa hotel links trong recommendation/footer/navigation bị loại
+không tạo membership. Nếu wrapper cũng chứa card hợp lệ, dữ liệu của subtree
+bị loại không được dùng để lấy URL, property attributes, tên, image alt hoặc
+text parse giá; quy tắc này cũng áp dụng khi text recommendation nằm bên trong
+hotel link. Phần đọc text giữ nội dung hiển thị và bỏ qua text ẩn. Collection
+và extraction fallback dùng cùng ranh giới này; các helper chỉ bật filter cho
+listing, giữ hành vi mặc định của detail extraction.
+
 ## Pagination completeness
 
 The manifest records one outcome for every planned destination and stay in

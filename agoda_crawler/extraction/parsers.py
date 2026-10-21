@@ -47,9 +47,9 @@ def parse_review_score(text: str) -> Optional[str]:
         rf"\b(\d{{1,2}}[.,]\d)\b.{{0,80}}?(?:{rating_words})",
     ]
     for pattern in contextual_patterns:
-        match = re.search(pattern, normalized_text, flags=re.IGNORECASE)
-        if match:
-            score = normalize_review_score(match.group(1))
+        contextual_match = re.search(pattern, normalized_text, flags=re.IGNORECASE)
+        if contextual_match:
+            score = normalize_review_score(contextual_match.group(1))
             if score:
                 return score
 

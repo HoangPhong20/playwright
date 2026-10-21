@@ -1,5 +1,6 @@
 """CLI orchestration for batch Agoda crawls."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import subprocess
@@ -7,7 +8,7 @@ import threading
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from playwright.sync_api import sync_playwright
 
@@ -25,7 +26,9 @@ from agoda_crawler.jobs import (
 )
 from agoda_crawler.run_context import RunContext, run_context_from_args
 from agoda_crawler.utils.debug_artifacts import debug_run_context
+from agoda_crawler.utils.crawl_metrics import aggregate_job_metrics
 from agoda_crawler.utils.logging import exception_message, log, log_prefix
+from agoda_crawler.utils import provenance as _provenance
 from agoda_crawler.utils.run_output import (
     is_publishable_record,
     print_verification_summary,
@@ -53,17 +56,52 @@ def parse_detail_fields(value: str) -> tuple[str, ...]:
     return fields or ("price_value",)
 
 
+@contextmanager
+def _preserve_primary_exception(manager):
+    value = manager.__enter__()
+    try:
+        yield value
+    except BaseException as error:
+        try:
+            manager.__exit__(type(error), error, error.__traceback__)
+        except BaseException:
+            pass
+        raise
+    else:
+        manager.__exit__(None, None, None)
+
+
 def run_crawl_job_batch(
     jobs: List[CrawlJob],
     args,
     run_context: RunContext,
     detail_worker_semaphore: threading.BoundedSemaphore,
     detail_fields: tuple[str, ...],
+    browser_metadata: Optional[Dict] = None,
+    browser_metadata_lock: Optional[Any] = None,
+    results_out: Optional[List[CrawlJobResult]] = None,
 ) -> List[CrawlJobResult]:
     results: List[CrawlJobResult] = []
-    with sync_playwright() as p:
+
+    def append_result(result: CrawlJobResult) -> None:
+        results.append(result)
+        if results_out is not None:
+            results_out.append(result)
+
+    with _preserve_primary_exception(sync_playwright()) as p:
         browser = p.chromium.launch(headless=args.headless)
         try:
+            if browser_metadata is not None:
+                _provenance.record_browser_version(
+                    browser_metadata, browser, browser_metadata_lock
+                )
+                browser_version = browser_metadata.get("actual_version")
+                browser_version_label = browser_version or browser_metadata.get(
+                    "actual_version_status", "unavailable"
+                )
+                log(
+                    f"Provenance Chromium version: {browser_version_label}"
+                )
             for job in jobs:
                 with log_prefix(_job_log_prefix(job)), debug_run_context(
                     run_context.path_batch_id,
@@ -72,6 +110,7 @@ def run_crawl_job_batch(
                 ):
                     log("Job started")
                     pagination: Dict = {}
+                    metrics: Dict = {}
                     try:
                         records = crawl_agoda_search_with_browser(
                             browser,
@@ -97,6 +136,7 @@ def run_crawl_job_batch(
                             stable_rounds=max(1, args.stable_rounds),
                             scroll_wait_ms=max(0, args.scroll_wait_ms),
                             pagination_outcome=pagination,
+                            metrics_outcome=metrics,
                         )
                     except Exception as error:
                         log(
@@ -113,25 +153,52 @@ def run_crawl_job_batch(
                         records = []
 
                 annotated_records: List[Dict] = []
-                for item in records:
-                    annotated = annotate_record(
-                        item,
-                        job.destination,
-                        job.check_in,
-                        job.check_out,
+                try:
+                    for item in records:
+                        annotated = annotate_record(
+                            item,
+                            job.destination,
+                            job.check_in,
+                            job.check_out,
+                        )
+                        if args.print_records:
+                            print(as_json(project_output_record(annotated)))
+                        annotated_records.append(annotated)
+                except Exception as error:
+                    pagination.setdefault("pages_requested", max(0, args.max_pages))
+                    pagination.setdefault("pages_collected", 0)
+                    pagination.update(
+                        status="failed",
+                        stop_reason="crawl_error",
+                        error=f"{type(error).__name__}: {error}",
                     )
-                    if args.print_records:
-                        print(as_json(project_output_record(annotated)))
-                    annotated_records.append(annotated)
-                results.append(
+                    append_result(
+                        CrawlJobResult(
+                            job=job,
+                            records=[],
+                            pagination=pagination,
+                            metrics=metrics,
+                        )
+                    )
+                    raise
+                append_result(
                     CrawlJobResult(
                         job=job,
                         records=annotated_records,
                         pagination=pagination,
+                        metrics=metrics,
                     )
                 )
+        except BaseException:
+            try:
+                browser.close()
+            except BaseException:
+                pass
+            browser = None
+            raise
         finally:
-            browser.close()
+            if browser is not None:
+                browser.close()
     return results
 
 
@@ -142,35 +209,64 @@ def run_crawl_jobs_for_stay(
     run_context: RunContext,
     detail_worker_semaphore: threading.BoundedSemaphore,
     detail_fields: tuple[str, ...],
+    browser_metadata: Optional[Dict] = None,
+    browser_metadata_lock: Optional[Any] = None,
+    job_results_out: Optional[List[CrawlJobResult]] = None,
 ) -> List[CrawlJobResult]:
+    if browser_metadata is not None and browser_metadata_lock is None:
+        browser_metadata_lock = threading.Lock()
+    first_error: Optional[BaseException] = None
     if worker_count == 1:
-        results = run_crawl_job_batch(
-            jobs,
-            args,
-            run_context,
-            detail_worker_semaphore,
-            detail_fields,
-        )
+        batch_results_out: List[CrawlJobResult] = []
+        try:
+            results = run_crawl_job_batch(
+                jobs,
+                args,
+                run_context,
+                detail_worker_semaphore,
+                detail_fields,
+                browser_metadata,
+                browser_metadata_lock,
+                batch_results_out,
+            )
+        except BaseException:
+            if job_results_out is not None:
+                job_results_out.extend(ordered_results(jobs, batch_results_out))
+            raise
     else:
         results = []
         batches = chunk_jobs(jobs, worker_count)
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [
-                executor.submit(
+            batch_results_by_future = {}
+            futures = []
+            for batch in batches:
+                batch_results_out = []
+                future = executor.submit(
                     run_crawl_job_batch,
                     batch,
                     args,
                     run_context,
                     detail_worker_semaphore,
                     detail_fields,
+                    browser_metadata,
+                    browser_metadata_lock,
+                    batch_results_out,
                 )
-                for batch in batches
-            ]
+                futures.append(future)
+                batch_results_by_future[future] = batch_results_out
             for future in as_completed(futures):
-                results.extend(future.result())
+                try:
+                    results.extend(future.result())
+                except BaseException as error:
+                    results.extend(batch_results_by_future[future])
+                    if first_error is None:
+                        first_error = error
 
     results = ordered_results(jobs, results)
-    write_crawl_results(results)
+    if job_results_out is not None:
+        job_results_out.extend(results)
+    if worker_count != 1 and first_error is not None:
+        raise first_error
     return results
 
 
@@ -200,6 +296,36 @@ def _run_from_args(args) -> None:
         raise
 
 
+def _apply_job_results_to_manifest(
+    manifest: Dict,
+    results: List[CrawlJobResult],
+) -> None:
+    by_identity: Dict[tuple[str, str, str], List[CrawlJobResult]] = {}
+    for result in results:
+        identity = (
+            result.job.destination,
+            result.job.check_in,
+            result.job.check_out,
+        )
+        by_identity.setdefault(identity, []).append(result)
+    for job_outcome in manifest.get("jobs", []):
+        identity = (
+            job_outcome.get("destination"),
+            job_outcome.get("check_in"),
+            job_outcome.get("check_out"),
+        )
+        matching_results = by_identity.get(identity)
+        if not matching_results:
+            continue
+        result = matching_results.pop(0)
+        job_outcome.update(result.pagination)
+        job_outcome["status"] = result.pagination.get("status", "failed")
+        job_outcome["stop_reason"] = result.pagination.get(
+            "stop_reason", "crawl_error"
+        )
+        job_outcome["metrics"] = dict(result.metrics)
+
+
 def _run_created_attempt(
     args,
     destinations: List[str],
@@ -210,114 +336,147 @@ def _run_created_attempt(
     manifest_path: Path,
     manifest: Dict,
 ) -> None:
-    detail_fields = parse_detail_fields(args.detail_fields)
-    detail_worker_semaphore = threading.BoundedSemaphore(
-        max(1, args.total_detail_concurrency)
-    )
-    max_worker_count = max(1, min(args.workers, len(destinations)))
+    batch_started_at = time.perf_counter()
 
-    print(
-        "Run: "
-        f"destinations={len(destinations)} stays={len(stays)} jobs={len(jobs)} "
-        f"pages={args.max_pages if args.max_pages > 0 else 'all'} headless={args.headless}"
-    )
-    print(
-        "Concurrency: "
-        f"workers={max_worker_count} detail_per_job={max(1, args.detail_concurrency)} "
-        f"detail_total={max(1, args.total_detail_concurrency)}"
-    )
-    print(
-        "Loading: "
-        f"scroll_rounds={args.max_scroll_rounds} stable={args.stable_rounds} "
-        f"wait_ms={args.scroll_wait_ms} detail_timeout={args.detail_timeout} "
-        f"field_retry={args.field_retry_timeout}msx{args.field_retry_count}"
-    )
-    print(
-        "Output: "
-        f"batch_id={run_context.batch_id} attempt={run_context.airflow_try_number} "
-        f"dir={run_output_dir} enrich={args.enrich_details} "
-        f"missing_only={args.enrich_missing_only} detail_fields={args.detail_fields}"
-    )
-    print()
+    def update_batch_metrics() -> None:
+        metrics = aggregate_job_metrics(
+            [job.get("metrics", {}) for job in manifest.get("jobs", [])]
+        )
+        metrics["batch_wall_seconds"] = time.perf_counter() - batch_started_at
+        manifest["summary"] = metrics
 
-    for check_in, check_out in stays:
-        stay_started_at = time.perf_counter()
-        stay_jobs = jobs_for_stay(jobs, check_in)
-        worker_count = max(1, min(args.workers, len(stay_jobs)))
-        output_path = stay_jobs[0].output_path
+    try:
+        detail_fields = parse_detail_fields(args.detail_fields)
+        detail_worker_semaphore = threading.BoundedSemaphore(
+            max(1, args.total_detail_concurrency)
+        )
+        max_worker_count = max(1, min(args.workers, len(destinations)))
+        browser_metadata_lock = threading.Lock()
+
         print(
-            f"\nStay {check_in} -> {check_out}: "
-            f"jobs={len(stay_jobs)} workers={worker_count} output={output_path}"
+            "Run: "
+            f"destinations={len(destinations)} stays={len(stays)} jobs={len(jobs)} "
+            f"pages={args.max_pages if args.max_pages > 0 else 'all'} headless={args.headless}"
         )
+        print(
+            "Concurrency: "
+            f"workers={max_worker_count} detail_per_job={max(1, args.detail_concurrency)} "
+            f"detail_total={max(1, args.total_detail_concurrency)}"
+        )
+        print(f"Provenance: {as_json(_provenance.log_summary(manifest['provenance']))}")
+        print(
+            "Loading: "
+            f"scroll_rounds={args.max_scroll_rounds} stable={args.stable_rounds} "
+            f"wait_ms={args.scroll_wait_ms} detail_timeout={args.detail_timeout} "
+            f"field_retry={args.field_retry_timeout}msx{args.field_retry_count}"
+        )
+        print(
+            "Output: "
+            f"batch_id={run_context.batch_id} attempt={run_context.airflow_try_number} "
+            f"dir={run_output_dir} enrich={args.enrich_details} "
+            f"missing_only={args.enrich_missing_only} detail_fields={args.detail_fields}"
+        )
+        print()
 
-        stay_results = run_crawl_jobs_for_stay(
-            stay_jobs,
-            args,
-            worker_count,
-            run_context,
-            detail_worker_semaphore,
-            detail_fields,
-        )
-        manifest_jobs = [
-            item for item in manifest["jobs"] if item["check_in"] == check_in
-        ]
-        for result, job_outcome in zip(stay_results, manifest_jobs):
-            job_outcome.update(result.pagination)
-            job_outcome["status"] = result.pagination.get("status", "failed")
-            job_outcome["stop_reason"] = result.pagination.get("stop_reason", "crawl_error")
-        _write_run_manifest(manifest_path, manifest)
-        stay_records = [
-            record
-            for result in stay_results
-            for record in result.records
-        ]
-        write_latest_outputs(
-            stay_records,
-            debug_dir=Path("debug") / run_context.path_batch_id / "summary" / check_in,
-        )
-        public_records = [record for record in stay_records if is_publishable_record(record)]
-        discarded_records = [record for record in stay_records if not is_publishable_record(record)]
-
-        print(f"\nStay {check_in} -> {check_out} complete")
-        if len(public_records) != len(stay_records):
+        for check_in, check_out in stays:
+            stay_started_at = time.perf_counter()
+            stay_jobs = jobs_for_stay(jobs, check_in)
+            worker_count = max(1, min(args.workers, len(stay_jobs)))
+            output_path = stay_jobs[0].output_path
             print(
-                "Discarded incomplete records: "
-                f"{len(stay_records) - len(public_records)} debug-only, "
-                f"{len(public_records)} publishable"
+                f"\nStay {check_in} -> {check_out}: "
+                f"jobs={len(stay_jobs)} workers={worker_count} output={output_path}"
             )
-        summarize(public_records)
-        elapsed_seconds = int(time.perf_counter() - stay_started_at)
-        print_verification_summary(
-            public_records,
-            elapsed_seconds,
-            discarded_records,
-            job_results=stay_results,
-        )
-        print(f"Saved JSONL: {output_path}\n")
-        manifest["stays"].append(
-            {
-                "check_in": check_in,
-                "check_out": check_out,
-                "output_path": str(output_path),
-                "output_file": output_path.name,
-                "records": len(stay_records),
-                "publishable_records": len(public_records),
-                "discarded_records": len(discarded_records),
-                "elapsed_seconds": elapsed_seconds,
-            }
-        )
-        _write_run_manifest(manifest_path, manifest)
-        incomplete_jobs = [
-            item
-            for item in manifest["jobs"]
-            if item["check_in"] == check_in and item["status"] != "complete"
-        ]
-        if incomplete_jobs:
-            reasons = ", ".join(
-                f"{item['destination']}:{item['stop_reason']}" for item in incomplete_jobs
-            )
-            raise RuntimeError(f"Crawl jobs did not complete: {reasons}")
 
+            stay_results_out: List[CrawlJobResult] = []
+            try:
+                stay_results = run_crawl_jobs_for_stay(
+                    stay_jobs,
+                    args,
+                    worker_count,
+                    run_context,
+                    detail_worker_semaphore,
+                    detail_fields,
+                    manifest["provenance"]["versions"]["chromium"],
+                    browser_metadata_lock,
+                    stay_results_out,
+                )
+            except Exception:
+                _apply_job_results_to_manifest(manifest, stay_results_out)
+                raise
+            _apply_job_results_to_manifest(manifest, stay_results)
+            update_batch_metrics()
+            _write_run_manifest(manifest_path, manifest)
+            write_crawl_results(stay_results)
+            stay_records = [
+                record
+                for result in stay_results
+                for record in result.records
+            ]
+            write_latest_outputs(
+                stay_records,
+                debug_dir=Path("debug") / run_context.path_batch_id / "summary" / check_in,
+            )
+            public_records = [
+                record for record in stay_records if is_publishable_record(record)
+            ]
+            discarded_records = [
+                record for record in stay_records if not is_publishable_record(record)
+            ]
+
+            print(f"\nStay {check_in} -> {check_out} complete")
+            if len(public_records) != len(stay_records):
+                print(
+                    "Discarded incomplete records: "
+                    f"{len(stay_records) - len(public_records)} debug-only, "
+                    f"{len(public_records)} publishable"
+                )
+            summarize(public_records)
+            elapsed_seconds = int(time.perf_counter() - stay_started_at)
+            print_verification_summary(
+                public_records,
+                elapsed_seconds,
+                discarded_records,
+                job_results=stay_results,
+            )
+            print(f"Saved JSONL: {output_path}\n")
+            manifest["stays"].append(
+                {
+                    "check_in": check_in,
+                    "check_out": check_out,
+                    "output_path": str(output_path),
+                    "output_file": output_path.name,
+                    "records": len(stay_records),
+                    "publishable_records": len(public_records),
+                    "discarded_records": len(discarded_records),
+                    "elapsed_seconds": elapsed_seconds,
+                    "metrics": aggregate_job_metrics(
+                        [result.metrics for result in stay_results]
+                    ),
+                }
+            )
+            update_batch_metrics()
+            _write_run_manifest(manifest_path, manifest)
+            incomplete_jobs = [
+                item
+                for item in manifest["jobs"]
+                if item["check_in"] == check_in and item["status"] != "complete"
+            ]
+            if incomplete_jobs:
+                reasons = ", ".join(
+                    f"{item['destination']}:{item['stop_reason']}"
+                    for item in incomplete_jobs
+                )
+                raise RuntimeError(f"Crawl jobs did not complete: {reasons}")
+    except Exception:
+        update_batch_metrics()
+        try:
+            _write_run_manifest(manifest_path, manifest)
+        except Exception:
+            pass
+        raise
+
+    update_batch_metrics()
     manifest["status"] = "complete"
     manifest["finished_at"] = _utc_now()
     _write_run_manifest(manifest_path, manifest)
@@ -340,6 +499,14 @@ def _new_run_manifest(
     stays: List[tuple[str, str]],
     jobs: List[CrawlJob],
 ) -> Dict:
+    started_at = _utc_now()
+    provenance = _provenance.capture_run_provenance(
+        args,
+        destinations,
+        stays,
+        project_root=Path(__file__).resolve().parents[1],
+        captured_at=started_at,
+    )
     return {
         "run_id": run_context.airflow_run_id,
         "batch_id": run_context.batch_id,
@@ -347,8 +514,9 @@ def _new_run_manifest(
         "airflow_run_id": run_context.airflow_run_id,
         "airflow_try_number": run_context.airflow_try_number,
         "status": "running",
-        "started_at": _utc_now(),
+        "started_at": started_at,
         "git_revision": _git_revision(),
+        "provenance": provenance,
         "config": vars(args),
         "destinations": destinations,
         "planned_stays": [
@@ -364,10 +532,12 @@ def _new_run_manifest(
                 "pages_collected": 0,
                 "status": "pending",
                 "stop_reason": None,
+                "metrics": {},
             }
             for job in jobs
         ],
         "stays": [],
+        "summary": {},
     }
 
 

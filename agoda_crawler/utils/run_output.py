@@ -5,6 +5,7 @@ from typing import Dict, List
 
 from agoda_crawler.config import MIN_OPTIONAL_COVERAGE
 from agoda_crawler.jobs import CrawlJobResult
+from agoda_crawler.utils.crawl_metrics import aggregate_job_metrics
 from agoda_crawler.utils import append_jsonl, as_json
 
 
@@ -73,7 +74,7 @@ def optional_coverage_status(
 
 def summarize(records: List[Dict], minimum_optional_coverage: float = MIN_OPTIONAL_COVERAGE) -> None:
     total = len(records)
-    missing = Counter()
+    missing: Counter[str] = Counter()
     for rec in records:
         for field in FIELDS_TO_CHECK:
             if not rec.get(field):
@@ -164,6 +165,9 @@ def print_verification_summary(
     price_present = sum(1 for rec in records if rec.get("price_value"))
     optional_status, optional_coverage = optional_coverage_status(records, minimum_optional_coverage)
     coverage_status = "warning" if discarded_records else "success"
+    all_job_metrics = aggregate_job_metrics(
+        [result.metrics for result in job_results or []]
+    )
 
     print("Verify:")
     print(f"- seconds={elapsed_seconds}")
@@ -210,6 +214,11 @@ def print_verification_summary(
                 f"stop={summary.get('stop_reason', 'crawl_error')}"
                 + (f" page_records={page_records}" if page_records else "")
             )
+            if result.metrics:
+                print(
+                    f"- job_metrics[{result.job.destination} {result.job.check_in}]: "
+                    f"{as_json(result.metrics)}"
+                )
     print(f"- scroll_rounds={scroll_rounds} target={','.join(selected_targets) if selected_targets else ''}")
     print(f"- visible_dom_max={max_visible_dom_cards}")
     print(f"- discarded_records={len(discarded_records)}")
@@ -222,6 +231,12 @@ def print_verification_summary(
     print(f"VERIFY_DETAIL_ATTEMPTED={detail_attempted}")
     print(f"VERIFY_DETAIL_SUCCESS={detail_success}")
     print(f"VERIFY_DETAIL_FAILED={detail_failed}")
+    if job_results is not None:
+        print(f"VERIFY_DETAIL_CANDIDATES_ALL={all_job_metrics.get('detail_candidates', 0)}")
+        print(f"VERIFY_DETAIL_SCHEDULED_ALL={all_job_metrics.get('detail_scheduled', 0)}")
+        print(f"VERIFY_DETAIL_ATTEMPTS_ALL={all_job_metrics.get('detail_attempts', 0)}")
+        print(f"VERIFY_DETAIL_FAILURES_ALL={all_job_metrics.get('detail_failures', 0)}")
+        print(f"VERIFY_JOB_METRICS_ALL={as_json(all_job_metrics)}")
     print(f"VERIFY_RATING_COVERAGE={optional_coverage['rating_text']:.1f}")
     print(f"VERIFY_REVIEW_COUNT_COVERAGE={optional_coverage['review_count_text']:.1f}")
     print(f"VERIFY_STAR_RATING_COVERAGE={optional_coverage['star_rating_text']:.1f}")

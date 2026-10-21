@@ -21,6 +21,7 @@ class CrawlJobResult:
     job: CrawlJob
     records: List[Dict]
     pagination: Dict = field(default_factory=dict)
+    metrics: Dict = field(default_factory=dict)
 
 
 def parse_destinations(destinations: str, fallback: str) -> List[str]:

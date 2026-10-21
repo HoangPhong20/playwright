@@ -62,7 +62,28 @@ def enrich_records_from_details(
     field_retry_timeout: int = FIELD_RETRY_TIMEOUT,
     field_retry_count: int = FIELD_RETRY_COUNT,
     detail_worker_semaphore: Optional[threading.BoundedSemaphore] = None,
+    metrics_outcome: Optional[Dict] = None,
 ) -> None:
+    if metrics_outcome is not None:
+        metrics_outcome.setdefault("slot_acquire_count", 0)
+        metrics_outcome.setdefault("slot_wait_seconds_sum", 0.0)
+        metrics_outcome.setdefault("slot_wait_seconds_max", 0.0)
+        for metric in (
+            "detail_candidates",
+            "detail_scheduled",
+            "detail_attempts",
+            "detail_failures",
+            "field_retries",
+            "detail_missing_target_after_attempt",
+        ):
+            metrics_outcome.setdefault(metric, 0)
+        for metric in (
+            "load_seconds_sum",
+            "extract_seconds_sum",
+            "record_seconds_sum",
+        ):
+            metrics_outcome.setdefault(metric, 0.0)
+
     limit = None if max_detail_pages <= 0 else max_detail_pages
     candidates = sorted(
         (
@@ -72,8 +93,12 @@ def enrich_records_from_details(
         ),
         key=lambda record: detail_enrichment_sort_key(record, detail_fields),
     )
+    if metrics_outcome is not None:
+        metrics_outcome["detail_candidates"] = len(candidates)
     if limit is not None:
         candidates = candidates[:limit]
+    if metrics_outcome is not None:
+        metrics_outcome["detail_scheduled"] = len(candidates)
 
     if not candidates:
         for record in records:
@@ -90,10 +115,16 @@ def enrich_records_from_details(
     worker_count = max(1, min(detail_concurrency, len(candidates)))
     if worker_count == 1:
         acquired_global_slot = False
+        metrics_lock = threading.Lock() if metrics_outcome is not None else None
         try:
             if detail_worker_semaphore is not None:
-                detail_worker_semaphore.acquire()
+                wait_seconds = _acquire_detail_slot(
+                    detail_worker_semaphore,
+                    measure_wait=metrics_outcome is not None,
+                )
                 acquired_global_slot = True
+                if metrics_outcome is not None:
+                    _record_detail_slot_wait(metrics_outcome, wait_seconds, metrics_lock)
             enrich_records_from_details_serial(
                 context,
                 candidates,
@@ -107,6 +138,8 @@ def enrich_records_from_details(
                 detail_fields=detail_fields,
                 field_retry_timeout=field_retry_timeout,
                 field_retry_count=field_retry_count,
+                metrics_outcome=metrics_outcome,
+                metrics_lock=metrics_lock,
             )
         finally:
             if acquired_global_slot and detail_worker_semaphore is not None:
@@ -132,6 +165,7 @@ def enrich_records_from_details(
         field_retry_timeout=field_retry_timeout,
         field_retry_count=field_retry_count,
         detail_worker_semaphore=detail_worker_semaphore,
+        metrics_outcome=metrics_outcome,
     )
 
 
@@ -152,6 +186,7 @@ def enrich_records_from_details_parallel(
     field_retry_timeout: int,
     field_retry_count: int,
     detail_worker_semaphore: Optional[threading.BoundedSemaphore],
+    metrics_outcome: Optional[Dict] = None,
 ) -> None:
     progress = {
         "started": 0,
@@ -191,6 +226,7 @@ def enrich_records_from_details_parallel(
                 field_retry_timeout,
                 field_retry_count,
                 detail_worker_semaphore,
+                metrics_outcome,
             )
             for _ in range(detail_concurrency)
         ]
@@ -211,6 +247,8 @@ def enrich_records_from_details_serial(
     detail_fields: tuple[str, ...],
     field_retry_timeout: int,
     field_retry_count: int,
+    metrics_outcome: Optional[Dict] = None,
+    metrics_lock: Optional[threading.Lock] = None,
 ) -> None:
     log(f"Detail: enriching {len(candidates)} records with 1 worker")
     started_at = time.perf_counter()
@@ -237,6 +275,8 @@ def enrich_records_from_details_serial(
                 detail_fields,
                 field_retry_timeout,
                 field_retry_count,
+                metrics_outcome,
+                metrics_lock,
             )
             if record.get("enrich_status") == "failed":
                 failed += 1
@@ -288,6 +328,7 @@ def enrich_detail_record_queue(
     field_retry_timeout: int,
     field_retry_count: int,
     detail_worker_semaphore: Optional[threading.BoundedSemaphore],
+    metrics_outcome: Optional[Dict] = None,
 ) -> None:
     try:
         first_record = records_queue.get_nowait()
@@ -298,8 +339,13 @@ def enrich_detail_record_queue(
     with log_prefix(parent_log_prefix):
         try:
             if detail_worker_semaphore is not None:
-                detail_worker_semaphore.acquire()
+                wait_seconds = _acquire_detail_slot(
+                    detail_worker_semaphore,
+                    measure_wait=metrics_outcome is not None,
+                )
                 acquired_global_slot = True
+                if metrics_outcome is not None:
+                    _record_detail_slot_wait(metrics_outcome, wait_seconds, progress_lock)
             with sync_playwright() as p:
                 browser = None
                 context = None
@@ -328,6 +374,8 @@ def enrich_detail_record_queue(
                             detail_fields,
                             field_retry_timeout,
                             field_retry_count,
+                            metrics_outcome,
+                            progress_lock,
                         )
                         update_detail_progress(progress, progress_lock, record)
                         try:
@@ -353,6 +401,46 @@ def enrich_detail_record_queue(
         finally:
             if acquired_global_slot and detail_worker_semaphore is not None:
                 detail_worker_semaphore.release()
+
+
+def _acquire_detail_slot(
+    semaphore: threading.BoundedSemaphore,
+    measure_wait: bool,
+) -> Optional[float]:
+    if not measure_wait:
+        semaphore.acquire()
+        return None
+
+    started_at = time.perf_counter()
+    semaphore.acquire()
+    return time.perf_counter() - started_at
+
+
+def _record_detail_slot_wait(
+    metrics_outcome: Dict,
+    wait_seconds: Optional[float],
+    metrics_lock: Optional[threading.Lock],
+) -> None:
+    if wait_seconds is None:
+        return
+
+    def update() -> None:
+        metrics_outcome["slot_acquire_count"] = int(
+            metrics_outcome.get("slot_acquire_count") or 0
+        ) + 1
+        metrics_outcome["slot_wait_seconds_sum"] = float(
+            metrics_outcome.get("slot_wait_seconds_sum") or 0.0
+        ) + wait_seconds
+        metrics_outcome["slot_wait_seconds_max"] = max(
+            float(metrics_outcome.get("slot_wait_seconds_max") or 0.0),
+            wait_seconds,
+        )
+
+    if metrics_lock is None:
+        update()
+    else:
+        with metrics_lock:
+            update()
 
 
 def update_detail_progress(
@@ -416,49 +504,112 @@ def enrich_one_record_on_page(
     detail_fields: tuple[str, ...],
     field_retry_timeout: int,
     field_retry_count: int,
+    metrics_outcome: Optional[Dict] = None,
+    metrics_lock: Optional[threading.Lock] = None,
 ) -> None:
     hotel_url = record.get("hotel_url")
-    target_url = with_stay_params(
-        hotel_url,
-        check_in,
-        check_out,
-        adults=adults,
-        rooms=rooms,
-        children=children,
-    )
     started_at = time.perf_counter()
+    attempt_started = False
+    load_seconds = 0.0
+    extract_seconds = 0.0
+    record_seconds = 0.0
+    record_time_measured = False
     try:
-        record["enrich_status"] = "attempted"
-        record["enrich_error"] = None
-        load_started_at = time.perf_counter()
-        detail_page.goto(target_url, wait_until="domcontentloaded", timeout=detail_timeout)
-        record["_detail_load_seconds"] = elapsed_seconds(load_started_at)
-        handle_cookie_popup(detail_page)
-        missing_fields = missing_detail_fields(record, detail_fields)
-        extract_started_at = time.perf_counter()
-        extracted_fields, retry_count = extract_detail_fields_with_field_retry(
-            detail_page,
-            missing_fields=missing_fields,
-            retry_timeout=field_retry_timeout,
-            retry_count=field_retry_count,
-        )
-        record["_detail_retry_count"] = retry_count
-        record["_detail_extract_seconds"] = elapsed_seconds(extract_started_at)
-    except Exception as exc:
-        error_text = exception_message(exc)
-        record["enrich_status"] = "failed"
-        record["enrich_error"] = error_text
-        record["_detail_total_seconds"] = elapsed_seconds(started_at)
-        log(
-            f"Detail failed: {index}/{total_label} "
-            f"time={format_seconds(record['_detail_total_seconds'])} - {error_text}"
-        )
-        return
+        try:
+            if not isinstance(hotel_url, str) or not hotel_url:
+                raise ValueError("Missing required hotel_url for detail enrichment")
+            target_url = with_stay_params(
+                hotel_url,
+                check_in,
+                check_out,
+                adults=adults,
+                rooms=rooms,
+                children=children,
+            )
+            record["enrich_status"] = "attempted"
+            record["enrich_error"] = None
+            if metrics_outcome is not None:
+                _add_detail_metric(
+                    metrics_outcome, "detail_attempts", 1, metrics_lock
+                )
+            load_started_at = time.perf_counter()
+            attempt_started = True
+            try:
+                detail_page.goto(
+                    target_url,
+                    wait_until="domcontentloaded",
+                    timeout=detail_timeout,
+                )
+            finally:
+                load_seconds = time.perf_counter() - load_started_at
+            record["_detail_load_seconds"] = elapsed_seconds(load_started_at)
+            handle_cookie_popup(detail_page)
+            missing_fields = missing_detail_fields(record, detail_fields)
+            extract_started_at = time.perf_counter()
+            try:
+                extracted_fields, retry_count = (
+                    extract_detail_fields_with_field_retry(
+                        detail_page,
+                        missing_fields=missing_fields,
+                        retry_timeout=field_retry_timeout,
+                        retry_count=field_retry_count,
+                        metrics_outcome=metrics_outcome,
+                        metrics_lock=metrics_lock,
+                    )
+                )
+            finally:
+                extract_seconds = time.perf_counter() - extract_started_at
+            record["_detail_retry_count"] = retry_count
+            record["_detail_extract_seconds"] = elapsed_seconds(extract_started_at)
+        except Exception as exc:
+            error_text = exception_message(exc)
+            record["enrich_status"] = "failed"
+            record["enrich_error"] = error_text
+            record_seconds = time.perf_counter() - started_at
+            record_time_measured = True
+            record["_detail_total_seconds"] = round(record_seconds, 2)
+            log(
+                f"Detail failed: {index}/{total_label} "
+                f"time={format_seconds(record['_detail_total_seconds'])} - {error_text}"
+            )
+            return
 
-    merge_missing_fields(record, extracted_fields)
-    record["enrich_status"] = "success"
-    record["enrich_error"] = None
-    record["_detail_total_seconds"] = elapsed_seconds(started_at)
+        merge_missing_fields(record, extracted_fields)
+        record["enrich_status"] = "success"
+        record["enrich_error"] = None
+        record_seconds = time.perf_counter() - started_at
+        record_time_measured = True
+        record["_detail_total_seconds"] = round(record_seconds, 2)
+    finally:
+        if attempt_started and metrics_outcome is not None:
+            if not record_time_measured:
+                record_seconds = time.perf_counter() - started_at
+            _add_detail_metric(
+                metrics_outcome, "load_seconds_sum", load_seconds, metrics_lock
+            )
+            _add_detail_metric(
+                metrics_outcome,
+                "extract_seconds_sum",
+                extract_seconds,
+                metrics_lock,
+            )
+            _add_detail_metric(
+                metrics_outcome,
+                "record_seconds_sum",
+                record_seconds,
+                metrics_lock,
+            )
+            if record.get("enrich_status") == "failed":
+                _add_detail_metric(
+                    metrics_outcome, "detail_failures", 1, metrics_lock
+                )
+            if missing_detail_fields(record, detail_fields):
+                _add_detail_metric(
+                    metrics_outcome,
+                    "detail_missing_target_after_attempt",
+                    1,
+                    metrics_lock,
+                )
 
 
 def needs_detail_enrichment(
@@ -483,6 +634,8 @@ def extract_detail_fields_with_field_retry(
     missing_fields: tuple[str, ...],
     retry_timeout: int,
     retry_count: int,
+    metrics_outcome: Optional[Dict] = None,
+    metrics_lock: Optional[threading.Lock] = None,
 ) -> tuple[Dict, int]:
     target_fields = tuple(field for field in missing_fields if field in FIELD_SELECTORS)
     if target_fields:
@@ -495,11 +648,29 @@ def extract_detail_fields_with_field_retry(
         if not remaining_fields:
             break
         retries_used += 1
+        if metrics_outcome is not None:
+            _add_detail_metric(metrics_outcome, "field_retries", 1, metrics_lock)
         scroll_detail_for_fields(page, remaining_fields, retry_timeout)
         retry_fields = extract_detail_fields(page)
         merge_missing_fields(detail_fields, retry_fields)
         remaining_fields = remaining_missing_fields(detail_fields, target_fields)
     return detail_fields, retries_used
+
+
+def _add_detail_metric(
+    metrics_outcome: Dict,
+    metric: str,
+    value: float,
+    metrics_lock: Optional[threading.Lock],
+) -> None:
+    def update() -> None:
+        metrics_outcome[metric] = metrics_outcome.get(metric, 0) + value
+
+    if metrics_lock is None:
+        update()
+    else:
+        with metrics_lock:
+            update()
 
 
 def remaining_missing_fields(detail_fields: Dict, target_fields: tuple[str, ...]) -> tuple[str, ...]:

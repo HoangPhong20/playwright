@@ -3,12 +3,49 @@ import time
 from typing import Dict, List
 
 
+_MAX_JOB_METRICS = {"scroll_rounds_max", "slot_wait_seconds_max"}
+
+
 def elapsed_seconds(started_at: float) -> float:
     return round(time.perf_counter() - started_at, 2)
 
 
 def format_seconds(seconds: float) -> str:
     return f"{seconds:.1f}s"
+
+
+def aggregate_scroll_metrics(attempt_metrics: List[Dict]) -> Dict[str, int]:
+    """Aggregate scroll work across page collections and pagination probes."""
+    total_rounds = 0
+    max_rounds = 0
+    total_actions = 0
+    for metrics in attempt_metrics:
+        rounds = metrics.get("scroll_rounds_total", metrics.get("scroll_rounds", 0))
+        max_rounds = max(
+            max_rounds,
+            metrics.get("scroll_rounds_max", metrics.get("scroll_rounds", 0)),
+        )
+        total_rounds += rounds
+        total_actions += metrics.get("scroll_actions", 0)
+    return {
+        "scroll_rounds_total": total_rounds,
+        "scroll_rounds_max": max_rounds,
+        "scroll_actions": total_actions,
+    }
+
+
+def aggregate_job_metrics(job_metrics: List[Dict]) -> Dict:
+    """Sum per-job metrics except explicitly max-aggregated values."""
+    totals: Dict = {}
+    for metrics in job_metrics:
+        for key, value in metrics.items():
+            if value is None:
+                continue
+            if key in _MAX_JOB_METRICS:
+                totals[key] = max(totals.get(key, value), value)
+            else:
+                totals[key] = totals.get(key, 0) + value
+    return totals
 
 
 def timing_bottleneck(timing: Dict[str, float]) -> str:
@@ -18,7 +55,9 @@ def timing_bottleneck(timing: Dict[str, float]) -> str:
     }
     if not candidates:
         return "unknown"
-    return max(candidates, key=candidates.get).replace("_seconds", "")
+    return max(candidates, key=lambda metric: candidates[metric]).replace(
+        "_seconds", ""
+    )
 
 
 def attach_timing_summary(records: List[Dict], timing: Dict[str, float]) -> None:

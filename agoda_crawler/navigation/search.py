@@ -458,11 +458,11 @@ def _find_hotel_tab(page: Page, timeout_ms: int) -> Optional[Locator]:
             if _is_visible(locator):
                 return locator
 
-        locator = _first_visible(page, HOTEL_TAB_SELECTORS, timeout_ms=500)
-        if locator is not None:
-            text = _safe_text(locator)
+        fallback_locator = _first_visible(page, HOTEL_TAB_SELECTORS, timeout_ms=500)
+        if fallback_locator is not None:
+            text = _safe_text(fallback_locator)
             if exact_text.search(text):
-                return locator
+                return fallback_locator
         time.sleep(0.2)
 
     return None
