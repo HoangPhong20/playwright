@@ -71,7 +71,7 @@ Mỗi attempt chứa JSONL và `run_manifest.json`; xem layout và lifecycle tro
 | --- | --- |
 | `pages=2/2 duplicate=0` | Đã thu đủ hai page yêu cầu và không phát hiện page lặp. |
 | `page_records` | Unique records của từng page trước khi merge toàn run. |
-| `records` | Records publishable sau khi lọc trường bắt buộc. |
+| `VERIFY_RECORDS_TOTAL` | Số record publishable sau khi lọc trường bắt buộc. |
 | `timing` | `search_sum`, `listing_sum`, `detail_sum` giúp tìm bước tốn thời gian. |
 | `VERIFY_COVERAGE_STATUS=success` | Không có record bị loại vì thiếu trường bắt buộc. |
 | `VERIFY_OPTIONAL_COVERAGE_STATUS` | Coverage rating/review/star; `warning` không làm job fail. |
