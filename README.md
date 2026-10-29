@@ -291,17 +291,18 @@ history để bảng tổng hợp luôn gồm cả dữ liệu cũ và batch m�
 
 Để debug ngoài Airflow, cần truyền run identity rõ ràng:
 
-```powershell
-python main.py --airflow-dag-id adhoc --airflow-run-id manual_001 `
-  --airflow-try-number 1 --output-dir data/airflow `
-  --destinations "Vung Tau" --date 2026-08-15 --max-pages 1 `
-  --workers 1 --no-enrich-details
-```
+Xem [runbook crawler local](docs/RUNBOOK.md) để chạy smoke test hoặc benchmark
+với ngày check-in tương lai và run ID mới mỗi lần chạy.
 
-Lệnh này chỉ crawl local; không tự upload hay trigger Databricks.
+Các lệnh CLI trong runbook chỉ crawl local; không tự upload hay trigger Databricks.
 
 ## Tài liệu chi tiết
 
+- [Mục lục tài liệu](docs/README.md)
+- [Kiến trúc và ranh giới module](docs/ARCHITECTURE.md)
+- [Chạy thử và benchmark crawler](docs/RUNBOOK.md)
+- [Data contract và quality rules](docs/DATA_QUALITY.md)
 - [Airflow runbook](airflow/README.md)
 - [Databricks ETL](databricks/README.md)
 - [Manifest và ingestion contract](docs/DATABRICKS_INGESTION.md)
+- [Quy ước phát triển](AGENTS.md)

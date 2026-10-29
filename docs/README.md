@@ -1,14 +1,31 @@
 # Tài liệu dự án
 
-Thư mục này chứa ngữ cảnh vận hành và kỹ thuật cho người phát triển và model làm việc với crawler.
-`README.md` và `AGENTS.md` ở root vẫn là điểm vào và quy ước bắt buộc của repository.
+`docs/` chứa tài liệu kỹ thuật dùng chung cho crawler, Airflow và Databricks.
+Chọn tài liệu theo công việc thay vì đọc toàn bộ theo thứ tự.
 
-Đọc theo thứ tự:
+## Đọc gì khi cần
 
-1. [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md): mục tiêu, luồng chạy và ranh giới module.
-2. [RUNBOOK.md](RUNBOOK.md): setup, lệnh chạy và benchmark runtime.
-3. [DATA_QUALITY.md](DATA_QUALITY.md): schema output, dedupe và tiêu chí chất lượng.
-4. [DATABRICKS_INGESTION.md](DATABRICKS_INGESTION.md): manifest và layout Unity Catalog Volume.
-5. [CHANGE_GUIDE.md](CHANGE_GUIDE.md): cách sửa code an toàn và test cần chạy.
+| Nhu cầu | Tài liệu |
+| --- | --- |
+| Bắt đầu, cài môi trường và chạy pipeline đầy đủ | [README ở root](../README.md) |
+| Hiểu luồng dữ liệu và tìm module cần sửa | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Chạy thử, benchmark và điều tra crawler local | [RUNBOOK.md](RUNBOOK.md) |
+| Hiểu JSONL, dedupe, coverage và quality gates | [DATA_QUALITY.md](DATA_QUALITY.md) |
+| Hiểu manifest, upload, batch identity và ingestion ledger | [DATABRICKS_INGESTION.md](DATABRICKS_INGESTION.md) |
+| Vận hành Docker và Airflow DAG | [Airflow README](../airflow/README.md) |
+| Upload source, setup bảng và cấu hình Databricks Job | [Databricks README](../databricks/README.md) |
+| Sửa code theo quy ước repository | [AGENTS.md ở root](../AGENTS.md) |
 
-Khi tài liệu mâu thuẫn với code, code và test hiện tại là nguồn sự thật. Cập nhật tài liệu cùng thay đổi code.
+## Quy ước tổ chức
+
+- Giữ `README.md` ở root làm điểm vào của repository.
+- Giữ một `AGENTS.md` ở root cho toàn repository, gồm cả quy tắc riêng của
+  Airflow và Databricks trong các mục tương ứng.
+- README của từng thành phần đặt cạnh source; `docs/` chỉ giữ kiến trúc,
+  vận hành crawler và contract dùng chung. Không tạo bản sao của các README.
+- Hướng dẫn sửa code nằm trong `AGENTS.md`; không duy trì thêm một change guide.
+- Không dùng tài liệu làm bản chụp `.env` local. Giá trị fallback nằm trong
+  [config.py](../agoda_crawler/config.py); `.env` là cấu hình runtime không commit.
+
+Khi hành vi thay đổi, cập nhật tài liệu sở hữu nội dung đó và các liên kết
+liên quan. Dùng code, contract YAML và test hiện tại để đối chiếu mô tả kỹ thuật.
